@@ -46,6 +46,25 @@ wget -nc -O en_GB-semaine-medium.onnx https://huggingface.co/rhasspy/piper-voice
 wget -nc -O en_GB-semaine-medium.onnx.json https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_GB/semaine/medium/en_GB-semaine-medium.onnx.json
 cd ..
 
+# 4.5 Install Whisper.cpp (Speech-to-Text)
+echo -e "${YELLOW}[4.5/6] Setting up Whisper.cpp...${NC}"
+if [ ! -d "whisper.cpp" ]; then
+    git clone https://github.com/ggerganov/whisper.cpp
+    cd whisper.cpp
+    
+    # Compile it for the Pi
+    echo "Compiling Whisper..."
+    make -j4
+    
+    # Download the small English model
+    echo "Downloading Model..."
+    ./models/download-ggml-model.sh base.en
+    
+    cd ..
+else
+    echo "Whisper.cpp already installed."
+fi
+
 # 5. Install Python Libraries
 echo -e "${YELLOW}[5/6] Installing Python Libraries...${NC}"
 pip install -r requirements.txt
