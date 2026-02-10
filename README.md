@@ -66,7 +66,7 @@ I provide a setup script that downloads the Piper TTS engine, the default voice 
 
 1.  **Clone the repository:**
     ```bash
-    git clone [https://github.com/YOUR_USERNAME/pi-local-assistant.git](https://github.com/YOUR_USERNAME/pi-local-assistant.git)
+    git clone [https://github.com/brenpoly/be-more-agent.git](https://github.com/brenpoly/be-more-agent.git)
     cd pi-local-assistant
     ```
 
