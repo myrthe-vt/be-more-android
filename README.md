@@ -125,6 +125,18 @@ This software is a generic framework. You can give it a new personality by repla
 
 ---
 
+### 🗣️ Installing the Custom BMO Voice
+To use the custom fine-tuned BMO voice instead of the default text-to-speech voice:
+
+1. Download the custom `.onnx` and `.onnx.json` voice model files from the [Releases](https://github.com/brenpoly/be-more-agent/releases) page.
+2. Move both downloaded files into the `piper/` folder inside your cloned repository.
+3. Open your `config.json` file and update the `voice_model` property to point to the new file. For example:
+   ```json
+   "voice_model": "piper/bmo-custom.onnx"
+4. Restart the agent.
+
+---
+
 ## ⚠️ Troubleshooting
 
 * **"No search library found":** If web search fails, ensure you are in the virtual environment and `duckduckgo-search` is installed via pip.
