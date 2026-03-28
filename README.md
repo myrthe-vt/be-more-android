@@ -125,15 +125,14 @@ This software is a generic framework. You can give it a new personality by repla
 
 ---
 
-# --- Set up Custom BMO Voice ---
+## Set up Custom BMO Voice
 
 echo "Setting up custom BMO voice model..."
 
-# Create the voices directory if it doesn't already exist
+### Create the voices directory if it doesn't already exist
 mkdir -p voices
 
-# Download the custom model and its JSON configuration file
-# Note: -L is required so curl follows GitHub's redirect links
+### Download the custom model and its JSON configuration file
 curl -L -o voices/bmo-custom.onnx "https://github.com/brenpoly/be-more-agent/releases/latest/download/bmo-custom.onnx"
 curl -L -o voices/bmo-custom.onnx.json "https://github.com/brenpoly/be-more-agent/releases/latest/download/bmo-custom.onnx.json"
 
