@@ -124,20 +124,19 @@ This software is a generic framework. You can give it a new personality by repla
 2.  **Sounds:** Put multiple `.wav` files in the `sounds/[category]/` folders. The robot will pick one at random each time (e.g., different "thinking" hums or "error" buzzes).
 
 ---
-```
-## Set up Custom BMO Voice
+## 🗣️ The Custom BMO Voice
 
-echo "Setting up custom BMO voice model..."
+This project features a custom, locally fine-tuned text-to-speech model to make the agent sound authentic! 
 
-# Create the voices directory if it doesn't already exist
-mkdir -p voices
+When you run the `setup.sh` script, it will automatically download the compiled `.onnx` model and its `.json` configuration file from the [Releases page](https://github.com/brenpoly/be-more-agent/releases) and place them into a local `voices/` directory.
 
-# Download the custom model and its JSON configuration file
-curl -L -o voices/bmo-custom.onnx "https://github.com/brenpoly/be-more-agent/releases/latest/download/bmo-custom.onnx"
-curl -L -o voices/bmo-custom.onnx.json "https://github.com/brenpoly/be-more-agent/releases/latest/download/bmo-custom.onnx.json"
-
-echo "Custom voice model installed successfully in the /voices directory."
-```
+**Manual Installation (if you are not using setup.sh):**
+1. Download `bmo.onnx` and `bmo.onnx.json` from the [Latest Release](https://github.com/brenpoly/be-more-agent/releases).
+2. Create a folder named `voices/` in the root directory of this repository.
+3. Place both downloaded files inside the `voices/` folder.
+4. Ensure your `config.json` file points to the new model:
+   ```json
+   "voice_model": "voices/bmo.onnx"
 ---
 
 ## ⚠️ Troubleshooting
