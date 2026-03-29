@@ -144,6 +144,25 @@ When you run the `setup.sh` script, it will automatically download the compiled 
 * **"No search library found":** If web search fails, ensure you are in the virtual environment and `duckduckgo-search` is installed via pip.
 * **Shutdown Errors:** When you exit the script (Ctrl+C), you might see `Expression 'alsa_snd_pcm_mmap_begin' failed`. **This is normal.** It just means the audio stream was cut off mid-sample. It does not affect the functionality.
 * **Audio Glitches:** If the voice sounds fast or slow, the script attempts to auto-detect sample rates. Ensure your `config.json` points to a valid `.onnx` voice model in the `piper/` folder.
+If your custom BMO voice sounds incredibly deep, slow, or "demonic," don't panic! This is not an issue with the Piper installation or the setup script. It is almost always caused by a **Sample Rate (Hz)** mismatch between the model and the audio player.
+
+Here is how to fix it:
+
+**Fix 1: Match the Sample Rate**
+By default, `agent.py` expects "medium" quality models and plays audio at 22050 Hz. If your custom model was trained at a different quality (like 48000 Hz or 16000 Hz), playing it at the default rate will stretch or compress the audio, severely altering the pitch.
+
+1. Open your model's configuration file (e.g., `voices/bmo.onnx.json`).
+2. Look for the `"sample_rate"` property and note the number (e.g., `22050`, `16000`, `48000`).
+3. Open `agent.py` and find the line: `PIPER_RATE = 22050`.
+4. Change that number to match the sample rate in your `.json` file.
+5. Save the file and restart the agent.
+
+**Fix 2: Check the Length Scale**
+If the sample rates match perfectly, the issue might be the model's internal pacing setting.
+
+1. Open your `voices/bmo.onnx.json` file.
+2. Look inside the `"inference"` block for a setting called `"length_scale"`. 
+3. Piper uses this to determine the speed of the voice. If this value is set significantly higher than `1.0`, it will stretch the audio and make BMO sound like a zombie. Lower it closer to `1.0` to speed the voice back up to normal.
 
 ## 📄 License
 This project is licensed under the MIT License - see the LICENSE file for details.
