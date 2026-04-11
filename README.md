@@ -165,7 +165,10 @@ If the sample rates match perfectly, the issue might be the model's internal pac
 3. Piper uses this to determine the speed of the voice. If this value is set significantly higher than `1.0`, it will stretch the audio and make BMO sound like a zombie. Lower it closer to `1.0` to speed the voice back up to normal.
 
 ## 📄 License
-This project is licensed under the MIT License - see the LICENSE file for details.
+This project is dual-licensed:
+
+* **Software / Code:** All source code is licensed under the [MIT License](LICENSE).
+* **Hardware / 3D Models:** The `.obj`, `.stl`, and other 3D modeling files associated with the physical case are licensed under the [Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International License](https://creativecommons.org/licenses/by-nc-sa/4.0/)
 
 ## ⚖️ Legal Disclaimer
 Disclaimer: Fan Project
