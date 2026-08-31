@@ -60,7 +60,7 @@ WAKE_WORD_THRESHOLD = 0.5
 INPUT_DEVICE_NAME = None
 
 DEFAULT_CONFIG = {
-    "text_model": "gemma3:1b",
+    "text_model": "qwen2.5:7b",
     "vision_model": "moondream",
     "voice_model": "piper/en_GB-semaine-medium.onnx",
     "chat_memory": True,
