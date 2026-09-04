@@ -4,6 +4,8 @@ import android.Manifest
 import android.content.pm.PackageManager
 import android.media.MediaRecorder
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.view.View
 import android.view.WindowManager
 import android.webkit.JavascriptInterface
@@ -25,18 +27,20 @@ import java.util.UUID
 class MainActivity : AppCompatActivity() {
 
     companion object {
-        private const val AUDIO_PERMISSION_REQUEST = 1001
+        private const val AUDIO_PERMISSION_REQUEST =
+            1001
+
+        private const val RETRY_DELAY_MS =
+            4000L
 
         private const val BMO_BASE_URL =
             "http://bmo-backend.example:8000"
 
-        /*
-         * native=1 tells face.js that this page is running inside
-         * the Android body, where microphone capture is handled by
-         * the JavascriptInterface instead of browser getUserMedia().
-         */
         private const val BMO_URL =
             "$BMO_BASE_URL/static/face.html?native=1"
+
+        private const val STATUS_URL =
+            "$BMO_BASE_URL/api/status"
 
         private const val TRANSCRIBE_URL =
             "$BMO_BASE_URL/api/transcribe"
@@ -44,15 +48,45 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var webView: WebView
 
-    private var recorder: MediaRecorder? = null
-    private var recordingFile: File? = null
-    private var isRecording = false
+    private val mainHandler =
+        Handler(
+            Looper.getMainLooper()
+        )
 
-    private var startAfterPermission = false
+    private var recorder: MediaRecorder? =
+        null
+
+    private var recordingFile: File? =
+        null
+
+    private var isRecording =
+        false
+
+    private var startAfterPermission =
+        false
+
+    private var showingBmoPage =
+        false
+
+    private var backendCheckRunning =
+        false
 
 
-    override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate(savedInstanceState)
+    private val retryRunnable =
+        object : Runnable {
+
+            override fun run() {
+                checkBackendAndUpdateUi()
+            }
+        }
+
+
+    override fun onCreate(
+        savedInstanceState: Bundle?
+    ) {
+        super.onCreate(
+            savedInstanceState
+        )
 
         window.addFlags(
             WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON
@@ -64,21 +98,22 @@ class MainActivity : AppCompatActivity() {
             R.layout.activity_main
         )
 
-        webView = findViewById(
-            R.id.webView
-        )
+        webView =
+            findViewById(
+                R.id.webView
+            )
 
         setupWebView()
 
-        if (savedInstanceState == null) {
-            webView.loadUrl(
-                BMO_URL
-            )
-        } else {
-            webView.restoreState(
-                savedInstanceState
-            )
-        }
+        /*
+         * Do NOT restore an old WebView state here.
+         *
+         * BMO's UI comes from the Mac backend, so Android should
+         * verify that the backend is really alive on every launch.
+         */
+        showConnectingPage()
+
+        checkBackendAndUpdateUi()
     }
 
 
@@ -91,25 +126,44 @@ class MainActivity : AppCompatActivity() {
             WebViewClient()
 
         webView.settings.apply {
-            javaScriptEnabled = true
-            domStorageEnabled = true
+            javaScriptEnabled =
+                true
+
+            domStorageEnabled =
+                true
 
             mediaPlaybackRequiresUserGesture =
                 false
 
+            /*
+             * Normal caching is okay once the backend has been
+             * confirmed alive. We no longer rely on WebView load
+             * failures for health detection.
+             */
             cacheMode =
                 WebSettings.LOAD_DEFAULT
 
-            useWideViewPort = true
-            loadWithOverviewMode = true
+            useWideViewPort =
+                true
 
-            allowFileAccess = false
-            allowContentAccess = true
+            loadWithOverviewMode =
+                true
 
-            setSupportZoom(false)
+            allowFileAccess =
+                false
 
-            builtInZoomControls = false
-            displayZoomControls = false
+            allowContentAccess =
+                true
+
+            setSupportZoom(
+                false
+            )
+
+            builtInZoomControls =
+                false
+
+            displayZoomControls =
+                false
         }
 
         webView.setBackgroundColor(
@@ -126,6 +180,285 @@ class MainActivity : AppCompatActivity() {
         )
     }
 
+
+    /*
+     * -------------------------------------------------------------------------
+     * Backend startup / reconnect logic
+     * -------------------------------------------------------------------------
+     */
+
+    private fun checkBackendAndUpdateUi() {
+        if (
+            backendCheckRunning
+        ) {
+            return
+        }
+
+        backendCheckRunning =
+            true
+
+        mainHandler.removeCallbacks(
+            retryRunnable
+        )
+
+        Thread {
+            val online =
+                isBackendOnline()
+
+            runOnUiThread {
+                backendCheckRunning =
+                    false
+
+                if (
+                    online
+                ) {
+                    showBmoPage()
+
+                } else {
+                    showOfflinePage()
+
+                    mainHandler.postDelayed(
+                        retryRunnable,
+                        RETRY_DELAY_MS
+                    )
+                }
+            }
+        }.start()
+    }
+
+
+    private fun isBackendOnline(): Boolean {
+        var connection:
+                HttpURLConnection? =
+            null
+
+        return try {
+            connection =
+                URL(
+                    STATUS_URL
+                ).openConnection()
+                        as HttpURLConnection
+
+            connection.requestMethod =
+                "GET"
+
+            connection.connectTimeout =
+                2500
+
+            connection.readTimeout =
+                2500
+
+            connection.useCaches =
+                false
+
+            connection.setRequestProperty(
+                "Cache-Control",
+                "no-cache"
+            )
+
+            val responseCode =
+                connection.responseCode
+
+            responseCode in
+                    200..299
+
+        } catch (
+            _: Exception
+        ) {
+            false
+
+        } finally {
+            connection
+                ?.disconnect()
+        }
+    }
+
+
+    private fun showBmoPage() {
+        mainHandler.removeCallbacks(
+            retryRunnable
+        )
+
+        /*
+         * Avoid repeatedly reloading the real BMO page if it is
+         * already open.
+         */
+        if (
+            showingBmoPage &&
+            webView.url
+                ?.startsWith(
+                    BMO_BASE_URL
+                ) == true
+        ) {
+            return
+        }
+
+        showingBmoPage =
+            true
+
+        webView.loadUrl(
+            BMO_URL
+        )
+    }
+
+
+    private fun showConnectingPage() {
+        showingBmoPage =
+            false
+
+        val html =
+            """
+            <!doctype html>
+
+            <html>
+            <head>
+                <meta
+                    name="viewport"
+                    content="width=device-width, initial-scale=1"
+                >
+
+                <style>
+                    html,
+                    body {
+                        width: 100%;
+                        height: 100%;
+                        margin: 0;
+                        overflow: hidden;
+                        background: #bdffcb;
+                        color: #000000;
+                        font-family: sans-serif;
+                    }
+
+                    body {
+                        display: flex;
+                        align-items: center;
+                        justify-content: center;
+                        text-align: center;
+                    }
+
+                    .face {
+                        font-family: monospace;
+                        font-size: 72px;
+                        margin-bottom: 22px;
+                    }
+
+                    .message {
+                        font-size: 28px;
+                        font-weight: 600;
+                    }
+                </style>
+            </head>
+
+            <body>
+                <div>
+                    <div class="face">
+                        • _ •
+                    </div>
+
+                    <div class="message">
+                        Waking up BMO...
+                    </div>
+                </div>
+            </body>
+            </html>
+            """.trimIndent()
+
+        webView.loadDataWithBaseURL(
+            null,
+            html,
+            "text/html",
+            "UTF-8",
+            null
+        )
+    }
+
+
+    private fun showOfflinePage() {
+        showingBmoPage =
+            false
+
+        val html =
+            """
+            <!doctype html>
+
+            <html>
+            <head>
+                <meta
+                    name="viewport"
+                    content="width=device-width, initial-scale=1"
+                >
+
+                <style>
+                    html,
+                    body {
+                        width: 100%;
+                        height: 100%;
+                        margin: 0;
+                        overflow: hidden;
+                        background: #bdffcb;
+                        color: #000000;
+                        font-family: sans-serif;
+                    }
+
+                    body {
+                        display: flex;
+                        align-items: center;
+                        justify-content: center;
+                        text-align: center;
+                    }
+
+                    .face {
+                        font-family: monospace;
+                        font-size: 72px;
+                        margin-bottom: 22px;
+                    }
+
+                    .message {
+                        font-size: 28px;
+                        font-weight: 600;
+                    }
+
+                    .small {
+                        margin-top: 12px;
+                        font-size: 18px;
+                        opacity: 0.7;
+                    }
+                </style>
+            </head>
+
+            <body>
+                <div>
+                    <div class="face">
+                        • _ •
+                    </div>
+
+                    <div class="message">
+                        BMO's brain is offline
+                    </div>
+
+                    <div class="small">
+                        Trying to reconnect...
+                    </div>
+                </div>
+            </body>
+            </html>
+            """.trimIndent()
+
+        webView.loadDataWithBaseURL(
+            null,
+            html,
+            "text/html",
+            "UTF-8",
+            null
+        )
+    }
+
+
+    /*
+     * -------------------------------------------------------------------------
+     * JavaScript bridge
+     * -------------------------------------------------------------------------
+     */
 
     inner class BMOBridge {
 
@@ -146,8 +479,16 @@ class MainActivity : AppCompatActivity() {
     }
 
 
+    /*
+     * -------------------------------------------------------------------------
+     * Native microphone
+     * -------------------------------------------------------------------------
+     */
+
     private fun startNativeRecording() {
-        if (isRecording) {
+        if (
+            isRecording
+        ) {
             return
         }
 
@@ -155,10 +496,14 @@ class MainActivity : AppCompatActivity() {
             ContextCompat.checkSelfPermission(
                 this,
                 Manifest.permission.RECORD_AUDIO
-            ) == PackageManager.PERMISSION_GRANTED
+            ) ==
+                    PackageManager.PERMISSION_GRANTED
 
-        if (!microphoneGranted) {
-            startAfterPermission = true
+        if (
+            !microphoneGranted
+        ) {
+            startAfterPermission =
+                true
 
             ActivityCompat.requestPermissions(
                 this,
@@ -172,13 +517,16 @@ class MainActivity : AppCompatActivity() {
         }
 
         try {
-            recordingFile = File.createTempFile(
-                "bmo_recording_",
-                ".m4a",
-                cacheDir
-            )
+            recordingFile =
+                File.createTempFile(
+                    "bmo_recording_",
+                    ".m4a",
+                    cacheDir
+                )
 
-            @Suppress("DEPRECATION")
+            @Suppress(
+                "DEPRECATION"
+            )
             recorder =
                 MediaRecorder().apply {
 
@@ -203,18 +551,23 @@ class MainActivity : AppCompatActivity() {
                     )
 
                     setOutputFile(
-                        recordingFile!!.absolutePath
+                        recordingFile!!
+                            .absolutePath
                     )
 
                     prepare()
+
                     start()
                 }
 
-            isRecording = true
+            isRecording =
+                true
 
             notifyJavascriptRecordingStarted()
 
-        } catch (exception: Exception) {
+        } catch (
+            exception: Exception
+        ) {
             exception.printStackTrace()
 
             cleanupRecorder()
@@ -227,19 +580,27 @@ class MainActivity : AppCompatActivity() {
 
 
     private fun stopNativeRecording() {
-        if (!isRecording) {
+        if (
+            !isRecording
+        ) {
             return
         }
 
-        isRecording = false
+        isRecording =
+            false
 
         try {
-            recorder?.stop()
+            recorder
+                ?.stop()
 
-        } catch (exception: RuntimeException) {
+        } catch (
+            exception:
+            RuntimeException
+        ) {
             exception.printStackTrace()
 
-            recordingFile?.delete()
+            recordingFile
+                ?.delete()
 
             cleanupRecorder()
 
@@ -277,20 +638,37 @@ class MainActivity : AppCompatActivity() {
 
     private fun cleanupRecorder() {
         try {
-            recorder?.reset()
-        } catch (_: Exception) {
+            recorder
+                ?.reset()
+
+        } catch (
+            _: Exception
+        ) {
         }
 
         try {
-            recorder?.release()
-        } catch (_: Exception) {
+            recorder
+                ?.release()
+
+        } catch (
+            _: Exception
+        ) {
         }
 
-        recorder = null
+        recorder =
+            null
     }
 
 
-    private fun uploadRecording(file: File) {
+    /*
+     * -------------------------------------------------------------------------
+     * Native recording upload
+     * -------------------------------------------------------------------------
+     */
+
+    private fun uploadRecording(
+        file: File
+    ) {
         Thread {
             try {
                 val transcript =
@@ -300,7 +678,9 @@ class MainActivity : AppCompatActivity() {
 
                 file.delete()
 
-                if (transcript.isBlank()) {
+                if (
+                    transcript.isBlank()
+                ) {
                     runOnUiThread {
                         notifyJavascriptNoSpeech()
                     }
@@ -314,7 +694,9 @@ class MainActivity : AppCompatActivity() {
                     )
                 }
 
-            } catch (exception: Exception) {
+            } catch (
+                exception: Exception
+            ) {
                 exception.printStackTrace()
 
                 file.delete()
@@ -339,13 +721,17 @@ class MainActivity : AppCompatActivity() {
         val connection =
             URL(
                 TRANSCRIBE_URL
-            ).openConnection() as HttpURLConnection
+            ).openConnection()
+                    as HttpURLConnection
 
         connection.requestMethod =
             "POST"
 
-        connection.doInput = true
-        connection.doOutput = true
+        connection.doInput =
+            true
+
+        connection.doOutput =
+            true
 
         connection.connectTimeout =
             30000
@@ -376,30 +762,36 @@ class MainActivity : AppCompatActivity() {
                 "Content-Type: audio/mp4\r\n\r\n"
             )
 
-            file.inputStream().use { input ->
+            file.inputStream()
+                .use { input ->
 
-                val buffer =
-                    ByteArray(
-                        8192
-                    )
-
-                while (true) {
-                    val bytesRead =
-                        input.read(
-                            buffer
+                    val buffer =
+                        ByteArray(
+                            8192
                         )
 
-                    if (bytesRead == -1) {
-                        break
-                    }
+                    while (
+                        true
+                    ) {
+                        val bytesRead =
+                            input.read(
+                                buffer
+                            )
 
-                    output.write(
-                        buffer,
-                        0,
-                        bytesRead
-                    )
+                        if (
+                            bytesRead ==
+                            -1
+                        ) {
+                            break
+                        }
+
+                        output.write(
+                            buffer,
+                            0,
+                            bytesRead
+                        )
+                    }
                 }
-            }
 
             output.writeBytes(
                 "\r\n--$boundary--\r\n"
@@ -413,9 +805,11 @@ class MainActivity : AppCompatActivity() {
 
         val responseStream =
             if (
-                responseCode in 200..299
+                responseCode in
+                200..299
             ) {
                 connection.inputStream
+
             } else {
                 connection.errorStream
             }
@@ -426,16 +820,20 @@ class MainActivity : AppCompatActivity() {
                     responseStream
                 )
             ).use { reader ->
+
                 reader.readText()
             }
 
         connection.disconnect()
 
         if (
-            responseCode !in 200..299
+            responseCode !in
+            200..299
         ) {
             throw RuntimeException(
-                "Transcription HTTP $responseCode: $responseText"
+                "Transcription HTTP " +
+                        "$responseCode: " +
+                        responseText
             )
         }
 
@@ -450,6 +848,12 @@ class MainActivity : AppCompatActivity() {
         )
     }
 
+
+    /*
+     * -------------------------------------------------------------------------
+     * JavaScript callbacks
+     * -------------------------------------------------------------------------
+     */
 
     private fun notifyJavascriptRecordingStarted() {
         evaluateJavascript(
@@ -530,10 +934,18 @@ class MainActivity : AppCompatActivity() {
     }
 
 
+    /*
+     * -------------------------------------------------------------------------
+     * Permissions
+     * -------------------------------------------------------------------------
+     */
+
     override fun onRequestPermissionsResult(
         requestCode: Int,
-        permissions: Array<out String>,
-        grantResults: IntArray
+        permissions:
+        Array<out String>,
+        grantResults:
+        IntArray
     ) {
         super.onRequestPermissionsResult(
             requestCode,
@@ -554,12 +966,14 @@ class MainActivity : AppCompatActivity() {
                 granted &&
                 startAfterPermission
             ) {
-                startAfterPermission = false
+                startAfterPermission =
+                    false
 
                 startNativeRecording()
 
             } else {
-                startAfterPermission = false
+                startAfterPermission =
+                    false
 
                 notifyJavascriptError(
                     "Microphone permission denied"
@@ -569,8 +983,16 @@ class MainActivity : AppCompatActivity() {
     }
 
 
+    /*
+     * -------------------------------------------------------------------------
+     * Immersive UI
+     * -------------------------------------------------------------------------
+     */
+
     private fun hideSystemUI() {
-        @Suppress("DEPRECATION")
+        @Suppress(
+            "DEPRECATION"
+        )
         window.decorView.systemUiVisibility =
             (
                     View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY or
@@ -590,30 +1012,41 @@ class MainActivity : AppCompatActivity() {
             hasFocus
         )
 
-        if (hasFocus) {
+        if (
+            hasFocus
+        ) {
             hideSystemUI()
         }
     }
 
 
-    override fun onSaveInstanceState(
-        outState: Bundle
-    ) {
-        webView.saveState(
-            outState
-        )
+    override fun onResume() {
+        super.onResume()
 
-        super.onSaveInstanceState(
-            outState
-        )
+        hideSystemUI()
+
+        /*
+         * Re-check every time BMO returns to the foreground.
+         */
+        checkBackendAndUpdateUi()
     }
 
 
     override fun onDestroy() {
-        if (isRecording) {
+        mainHandler.removeCallbacks(
+            retryRunnable
+        )
+
+        if (
+            isRecording
+        ) {
             try {
-                recorder?.stop()
-            } catch (_: Exception) {
+                recorder
+                    ?.stop()
+
+            } catch (
+                _: Exception
+            ) {
             }
         }
 
