@@ -6,13 +6,10 @@ const transcriptElement = document.getElementById("transcript");
 const pageParams = new URLSearchParams(window.location.search);
 const nativeShellRequested = pageParams.get("native") === "1";
 
-/*
- * A very short delay prevents accidental taps from starting the mic.
- *
- * 120 ms still feels essentially instant when deliberately holding
- * BMO to talk.
- */
 const HOLD_START_DELAY_MS = 120;
+const BACKEND_CHECK_INTERVAL_MS = 5000;
+const BACKEND_CHECK_TIMEOUT_MS = 3000;
+
 
 function getNativeBridge() {
     try {
@@ -53,26 +50,32 @@ class BMOFaceRenderer {
         };
 
         this.eyeY = 195;
+
         this.leftEyeX = 217;
         this.rightEyeX = 581;
+
         this.eyeR = 18;
 
         this.mouthY = 302;
         this.mouthW = 97;
 
         this.state = "idle";
+
         this.frame = 0;
         this.blink = 0;
 
         this.eyeOffsetX = 0;
         this.eyeOffsetY = 0;
+
         this.eyePulseR = 0;
 
         this.mouthOpen = 0;
     }
 
+
     clear() {
-        this.ctx.fillStyle = this.colors.bg;
+        this.ctx.fillStyle =
+            this.colors.bg;
 
         this.ctx.fillRect(
             0,
@@ -81,6 +84,7 @@ class BMOFaceRenderer {
             this.height
         );
     }
+
 
     drawArc(
         cx,
@@ -111,6 +115,7 @@ class BMOFaceRenderer {
 
         this.ctx.stroke();
     }
+
 
     drawCircle(
         cx,
@@ -145,6 +150,7 @@ class BMOFaceRenderer {
         }
     }
 
+
     drawLine(
         x1,
         y1,
@@ -175,6 +181,7 @@ class BMOFaceRenderer {
 
         this.ctx.stroke();
     }
+
 
     drawMouth(
         type,
@@ -306,6 +313,7 @@ class BMOFaceRenderer {
         }
     }
 
+
     render() {
         this.clear();
 
@@ -387,7 +395,7 @@ class BMOFaceRenderer {
         }
 
         /*
-         * Thinking animation
+         * Thinking
          */
         if (
             this.state ===
@@ -400,7 +408,7 @@ class BMOFaceRenderer {
         }
 
         /*
-         * Listening animation
+         * Listening
          */
         if (
             this.state ===
@@ -416,7 +424,7 @@ class BMOFaceRenderer {
         }
 
         /*
-         * Speaking animation
+         * Speaking
          */
         if (
             this.state ===
@@ -456,10 +464,9 @@ class BMOFaceRenderer {
             }
         }
 
-        /*
-         * Emotional expressions
-         */
-        switch (this.state) {
+        switch (
+            this.state
+        ) {
             case "happy":
                 eyeType =
                     "happy";
@@ -650,14 +657,11 @@ const bmoRenderer =
 bmoRenderer.render();
 
 
-/*
- * Runtime state
- */
-
 let conversationHistory = [];
 
 let mediaRecorder = null;
 let microphoneStream = null;
+
 let audioChunks = [];
 
 let isRecording = false;
@@ -666,10 +670,10 @@ let recordingStartPending = false;
 let holdStartTimer = null;
 let activePointerId = null;
 
-let currentAudio = null;
-let currentAudioSource = null;
+let backendOnline = true;
+let backendCheckTimer = null;
 
-let playbackGeneration = 0;
+let currentAudio = null;
 
 let statusTimer = null;
 let transcriptTimer = null;
@@ -686,13 +690,19 @@ let wakeLock = null;
  */
 
 function setFaceState(state) {
-    bmoRenderer.state = state;
+    bmoRenderer.state =
+        state;
 
-    if (state !== "speaking") {
-        bmoRenderer.mouthOpen = 0;
+    if (
+        state !==
+        "speaking"
+    ) {
+        bmoRenderer.mouthOpen =
+            0;
     }
 
-    bmoRenderer.eyeOffsetY = 0;
+    bmoRenderer.eyeOffsetY =
+        0;
 }
 
 
@@ -700,7 +710,9 @@ function showStatus(
     text,
     duration = 1800
 ) {
-    clearTimeout(statusTimer);
+    clearTimeout(
+        statusTimer
+    );
 
     statusMessage.textContent =
         text;
@@ -709,7 +721,9 @@ function showStatus(
         "hidden"
     );
 
-    if (duration > 0) {
+    if (
+        duration > 0
+    ) {
         statusTimer =
             setTimeout(
                 () => {
@@ -750,29 +764,168 @@ function showTranscript(
 }
 
 
-function recoverToIdle(
-    delay = 1500
+/*
+ * Backend health / reconnect
+ */
+
+function setBackendOnline(
+    online
 ) {
-    setTimeout(
-        () => {
-            if (
-                !isRecording &&
-                !recordingStartPending &&
-                bmoRenderer.state !==
-                    "speaking"
-            ) {
-                setFaceState(
-                    "idle"
-                );
-            }
-        },
-        delay
-    );
+    const changed =
+        backendOnline !==
+        online;
+
+    backendOnline =
+        online;
+
+    if (
+        !changed
+    ) {
+        return;
+    }
+
+    if (
+        online
+    ) {
+        if (
+            !isRecording &&
+            bmoRenderer.state !==
+                "speaking"
+        ) {
+            setFaceState(
+                "idle"
+            );
+
+            showStatus(
+                "BMO brain reconnected",
+                1800
+            );
+        }
+
+    } else {
+        if (
+            !isRecording &&
+            bmoRenderer.state !==
+                "speaking"
+        ) {
+            setFaceState(
+                "sleepy"
+            );
+
+            showStatus(
+                "BMO brain offline - reconnecting...",
+                0
+            );
+        }
+    }
+}
+
+
+async function checkBackendHealth() {
+    let timeoutId =
+        null;
+
+    try {
+        const controller =
+            new AbortController();
+
+        timeoutId =
+            setTimeout(
+                () =>
+                    controller.abort(),
+                BACKEND_CHECK_TIMEOUT_MS
+            );
+
+        const response =
+            await fetch(
+                "/api/status",
+                {
+                    method:
+                        "GET",
+
+                    cache:
+                        "no-store",
+
+                    signal:
+                        controller.signal,
+                }
+            );
+
+        clearTimeout(
+            timeoutId
+        );
+
+        timeoutId =
+            null;
+
+        setBackendOnline(
+            response.ok
+        );
+
+    } catch (error) {
+        if (
+            timeoutId
+        ) {
+            clearTimeout(
+                timeoutId
+            );
+        }
+
+        setBackendOnline(
+            false
+        );
+    }
+}
+
+
+function scheduleBackendChecks() {
+    if (
+        backendCheckTimer
+    ) {
+        clearInterval(
+            backendCheckTimer
+        );
+    }
+
+    checkBackendHealth();
+
+    backendCheckTimer =
+        setInterval(
+            checkBackendHealth,
+            BACKEND_CHECK_INTERVAL_MS
+        );
 }
 
 
 /*
- * Keep BMO awake where supported.
+ * Stop current BMO speech.
+ */
+
+function stopCurrentAudio() {
+    if (
+        !currentAudio
+    ) {
+        return;
+    }
+
+    try {
+        currentAudio.pause();
+        currentAudio.currentTime =
+            0;
+
+    } catch (_) {
+    }
+
+    currentAudio =
+        null;
+
+    bmoRenderer.mouthOpen =
+        0;
+}
+
+
+/*
+ * Wake lock
  */
 
 async function requestWakeLock() {
@@ -842,75 +995,6 @@ function getRecorderOptions() {
 
 
 /*
- * Audio cleanup
- */
-
-function disconnectVisualizer() {
-    bmoRenderer.mouthOpen =
-        0;
-
-    if (
-        currentAudioSource
-    ) {
-        try {
-            currentAudioSource.disconnect();
-        } catch (_) {
-        }
-
-        currentAudioSource =
-            null;
-    }
-
-    if (
-        analyser
-    ) {
-        try {
-            analyser.disconnect();
-        } catch (_) {
-        }
-
-        analyser =
-            null;
-    }
-
-    dataArray =
-        null;
-}
-
-
-function stopCurrentAudio() {
-    /*
-     * Incrementing this invalidates listeners belonging to
-     * the previous playback session.
-     */
-    playbackGeneration++;
-
-    disconnectVisualizer();
-
-    if (
-        currentAudio
-    ) {
-        try {
-            currentAudio.pause();
-        } catch (_) {
-        }
-
-        try {
-            currentAudio.currentTime =
-                0;
-        } catch (_) {
-        }
-
-        currentAudio =
-            null;
-    }
-
-    bmoRenderer.mouthOpen =
-        0;
-}
-
-
-/*
  * Recording
  */
 
@@ -922,11 +1006,23 @@ async function startRecording() {
         return;
     }
 
-    /*
-     * If BMO was speaking, this is barge-in.
-     *
-     * Stop speech immediately before opening the microphone.
-     */
+    if (
+        !backendOnline
+    ) {
+        setFaceState(
+            "sleepy"
+        );
+
+        showStatus(
+            "BMO brain offline - reconnecting...",
+            0
+        );
+
+        checkBackendHealth();
+
+        return;
+    }
+
     if (
         bmoRenderer.state ===
             "speaking" ||
@@ -946,11 +1042,6 @@ async function startRecording() {
     ) {
         try {
             nativeBridge.startRecording();
-
-            /*
-             * Native Android sets isRecording=true when
-             * onNativeRecordingStarted() arrives.
-             */
 
             return;
 
@@ -972,15 +1063,20 @@ async function startRecording() {
                 2500
             );
 
-            recoverToIdle();
+            setTimeout(
+                () =>
+                    setFaceState(
+                        "idle"
+                    ),
+                1500
+            );
 
             return;
         }
     }
 
     /*
-     * The native Android shell should never fall back to
-     * browser getUserMedia().
+     * Native Android must use the native bridge.
      */
     if (
         nativeShellRequested
@@ -1001,7 +1097,13 @@ async function startRecording() {
             2500
         );
 
-        recoverToIdle();
+        setTimeout(
+            () =>
+                setFaceState(
+                    "idle"
+                ),
+            1500
+        );
 
         return;
     }
@@ -1014,7 +1116,8 @@ async function startRecording() {
 
         if (
             !navigator.mediaDevices ||
-            !navigator.mediaDevices.getUserMedia
+            !navigator.mediaDevices
+                .getUserMedia
         ) {
             throw new Error(
                 "getUserMedia is unavailable"
@@ -1022,20 +1125,21 @@ async function startRecording() {
         }
 
         microphoneStream =
-            await navigator.mediaDevices.getUserMedia(
-                {
-                    audio: {
-                        echoCancellation:
-                            true,
+            await navigator.mediaDevices
+                .getUserMedia(
+                    {
+                        audio: {
+                            echoCancellation:
+                                true,
 
-                        noiseSuppression:
-                            true,
+                            noiseSuppression:
+                                true,
 
-                        autoGainControl:
-                            true,
-                    },
-                }
-            );
+                            autoGainControl:
+                                true,
+                        },
+                    }
+                );
 
         mediaRecorder =
             new MediaRecorder(
@@ -1080,7 +1184,8 @@ async function startRecording() {
                 ) {
                     for (
                         const track
-                        of microphoneStream.getTracks()
+                        of microphoneStream
+                            .getTracks()
                     ) {
                         track.stop();
                     }
@@ -1088,9 +1193,6 @@ async function startRecording() {
                     microphoneStream =
                         null;
                 }
-
-                mediaRecorder =
-                    null;
 
                 await sendAudioToBMO(
                     blob
@@ -1128,27 +1230,10 @@ async function startRecording() {
         recordingStartPending =
             false;
 
-        isRecording =
-            false;
-
         console.error(
             "Browser microphone error:",
             error
         );
-
-        if (
-            microphoneStream
-        ) {
-            for (
-                const track
-                of microphoneStream.getTracks()
-            ) {
-                track.stop();
-            }
-
-            microphoneStream =
-                null;
-        }
 
         setFaceState(
             "error"
@@ -1159,17 +1244,18 @@ async function startRecording() {
             3000
         );
 
-        recoverToIdle();
+        setTimeout(
+            () =>
+                setFaceState(
+                    "idle"
+                ),
+            1500
+        );
     }
 }
 
 
 function stopRecording() {
-    /*
-     * If recording has not actually started yet, do nothing.
-     *
-     * This protects against very short taps.
-     */
     if (
         recordingStartPending &&
         !isRecording
@@ -1193,12 +1279,6 @@ function stopRecording() {
             nativeBridge.stopRecording();
 
         } catch (error) {
-            isRecording =
-                false;
-
-            recordingStartPending =
-                false;
-
             console.error(
                 "Native microphone stop failed:",
                 error
@@ -1212,8 +1292,6 @@ function stopRecording() {
                 "Microphone connection failed",
                 2500
             );
-
-            recoverToIdle();
         }
 
         return;
@@ -1261,7 +1339,7 @@ function stopRecording() {
 
 
 /*
- * Hold gesture
+ * Hold interaction
  */
 
 function cancelPendingHold() {
@@ -1275,20 +1353,10 @@ function cancelPendingHold() {
         holdStartTimer =
             null;
     }
-
-    if (
-        recordingStartPending &&
-        !isRecording
-    ) {
-        recordingStartPending =
-            false;
-    }
 }
 
 
-function beginHold(
-    event
-) {
+function beginHold(event) {
     if (
         activePointerId !==
         null
@@ -1300,10 +1368,8 @@ function beginHold(
         event.pointerId;
 
     /*
-     * Barge-in should feel immediate.
-     *
-     * Silence BMO on pointer-down, even though microphone
-     * recording itself waits for the tiny hold threshold.
+     * Pressing while BMO is speaking silences him immediately.
+     * Holding past the threshold begins recording.
      */
     if (
         bmoRenderer.state ===
@@ -1368,21 +1434,21 @@ function endHold(
     activePointerId =
         null;
 
-    /*
-     * A tap shorter than HOLD_START_DELAY_MS never opened
-     * the microphone, so there is nothing to stop.
-     */
     if (
         timerWasPending
     ) {
-        setFaceState(
-            "idle"
-        );
+        if (
+            backendOnline
+        ) {
+            setFaceState(
+                "idle"
+            );
 
-        showStatus(
-            "Hold to talk",
-            1000
-        );
+            showStatus(
+                "Hold to talk",
+                1000
+            );
+        }
 
         return;
     }
@@ -1447,6 +1513,10 @@ async function sendAudioToBMO(
         const data =
             await response.json();
 
+        setBackendOnline(
+            true
+        );
+
         if (
             !data.text
         ) {
@@ -1471,21 +1541,23 @@ async function sendAudioToBMO(
         );
 
     } catch (error) {
+        setBackendOnline(
+            false
+        );
+
         console.error(
             "Transcription error:",
             error
         );
 
         setFaceState(
-            "error"
+            "sleepy"
         );
 
         showStatus(
-            "I couldn't hear that",
-            2500
+            "BMO brain offline - reconnecting...",
+            0
         );
-
-        recoverToIdle();
     }
 }
 
@@ -1546,6 +1618,10 @@ async function sendMessage(
         const data =
             await response.json();
 
+        setBackendOnline(
+            true
+        );
+
         if (
             data.history
         ) {
@@ -1573,21 +1649,23 @@ async function sendMessage(
         );
 
     } catch (error) {
+        setBackendOnline(
+            false
+        );
+
         console.error(
             "Chat error:",
             error
         );
 
         setFaceState(
-            "error"
+            "sleepy"
         );
 
         showStatus(
-            "BMO brain connection failed",
-            2500
+            "BMO brain offline - reconnecting...",
+            0
         );
-
-        recoverToIdle();
     }
 }
 
@@ -1601,16 +1679,13 @@ async function playBMOAudio(
 ) {
     stopCurrentAudio();
 
-    const generation =
-        playbackGeneration;
-
-    const audio =
+    currentAudio =
         new Audio(
             audioUrl
         );
 
-    currentAudio =
-        audio;
+    const thisAudio =
+        currentAudio;
 
     setFaceState(
         "speaking"
@@ -1622,25 +1697,18 @@ async function playBMOAudio(
     );
 
     setupVisualizer(
-        audio,
-        generation
+        thisAudio
     );
 
-    audio.addEventListener(
+    thisAudio.addEventListener(
         "ended",
         () => {
-            /*
-             * Ignore an old audio element whose playback was
-             * replaced or interrupted.
-             */
             if (
-                generation !==
-                playbackGeneration
+                currentAudio !==
+                thisAudio
             ) {
                 return;
             }
-
-            disconnectVisualizer();
 
             currentAudio =
                 null;
@@ -1656,12 +1724,12 @@ async function playBMOAudio(
         }
     );
 
-    audio.addEventListener(
+    thisAudio.addEventListener(
         "error",
         (error) => {
             if (
-                generation !==
-                playbackGeneration
+                currentAudio !==
+                thisAudio
             ) {
                 return;
             }
@@ -1670,8 +1738,6 @@ async function playBMOAudio(
                 "Audio playback error:",
                 error
             );
-
-            disconnectVisualizer();
 
             currentAudio =
                 null;
@@ -1685,17 +1751,23 @@ async function playBMOAudio(
                 2200
             );
 
-            recoverToIdle();
+            setTimeout(
+                () =>
+                    setFaceState(
+                        "idle"
+                    ),
+                1500
+            );
         }
     );
 
     try {
-        await audio.play();
+        await thisAudio.play();
 
     } catch (error) {
         if (
-            generation !==
-            playbackGeneration
+            currentAudio !==
+            thisAudio
         ) {
             return;
         }
@@ -1704,8 +1776,6 @@ async function playBMOAudio(
             "Audio autoplay error:",
             error
         );
-
-        disconnectVisualizer();
 
         currentAudio =
             null;
@@ -1727,11 +1797,8 @@ async function playBMOAudio(
  */
 
 function setupVisualizer(
-    audioElement,
-    generation
+    audioElement
 ) {
-    disconnectVisualizer();
-
     if (
         !audioContext
     ) {
@@ -1742,18 +1809,20 @@ function setupVisualizer(
             )();
     }
 
-    currentAudioSource =
-        audioContext.createMediaElementSource(
-            audioElement
-        );
+    const source =
+        audioContext
+            .createMediaElementSource(
+                audioElement
+            );
 
     analyser =
-        audioContext.createAnalyser();
+        audioContext
+            .createAnalyser();
 
     analyser.fftSize =
         256;
 
-    currentAudioSource.connect(
+    source.connect(
         analyser
     );
 
@@ -1768,14 +1837,10 @@ function setupVisualizer(
 
     function syncMouth() {
         if (
-            generation !==
-                playbackGeneration ||
             bmoRenderer.state !==
                 "speaking" ||
             audioElement.paused ||
-            audioElement.ended ||
-            !analyser ||
-            !dataArray
+            audioElement.ended
         ) {
             bmoRenderer.mouthOpen =
                 0;
@@ -1819,7 +1884,7 @@ function setupVisualizer(
 
 
 /*
- * Touch / mouse controls
+ * Touch controls
  */
 
 screen.addEventListener(
@@ -1874,7 +1939,7 @@ window.addEventListener(
 
 
 /*
- * Keep BMO awake.
+ * Wake lock
  */
 
 document.addEventListener(
@@ -1885,6 +1950,8 @@ document.addEventListener(
             "visible"
         ) {
             await requestWakeLock();
+
+            checkBackendHealth();
         }
     }
 );
@@ -1903,9 +1970,7 @@ document.addEventListener(
 
 
 /*
- * Browser / PWA support
- *
- * The native Android shell does not need a service worker.
+ * Browser/PWA support
  */
 
 if (
@@ -1916,13 +1981,15 @@ if (
         "load",
         async () => {
             try {
-                await navigator.serviceWorker.register(
-                    "/static/sw.js",
-                    {
-                        scope:
-                            "/static/",
-                    }
-                );
+                await navigator
+                    .serviceWorker
+                    .register(
+                        "/static/sw.js",
+                        {
+                            scope:
+                                "/static/",
+                        }
+                    );
 
                 console.log(
                     "BMO service worker ready"
@@ -1940,7 +2007,7 @@ if (
 
 
 /*
- * Native Android microphone callbacks
+ * Native Android callbacks
  */
 
 window.onNativeRecordingStarted =
@@ -2009,6 +2076,10 @@ window.onNativeTranscript =
         isRecording =
             false;
 
+        setBackendOnline(
+            true
+        );
+
         const cleanedText =
             String(
                 text ||
@@ -2048,6 +2119,10 @@ window.onNativeNoSpeech =
         isRecording =
             false;
 
+        setBackendOnline(
+            true
+        );
+
         setFaceState(
             "idle"
         );
@@ -2069,22 +2144,56 @@ window.onNativeMicError =
         isRecording =
             false;
 
+        const errorText =
+            String(
+                message ||
+                ""
+            );
+
         console.error(
             "Native microphone error:",
-            message
+            errorText
         );
+
+        if (
+            errorText
+                .toLowerCase()
+                .includes(
+                    "transcription"
+                )
+        ) {
+            setBackendOnline(
+                false
+            );
+
+            setFaceState(
+                "sleepy"
+            );
+
+            showStatus(
+                "BMO brain offline - reconnecting...",
+                0
+            );
+
+            return;
+        }
 
         setFaceState(
             "error"
         );
 
         showStatus(
-            message ||
+            errorText ||
                 "Microphone error",
             2500
         );
 
-        recoverToIdle(
+        setTimeout(
+            () => {
+                setFaceState(
+                    "idle"
+                );
+            },
             1800
         );
     };
@@ -2102,3 +2211,5 @@ showStatus(
     "Hold anywhere to talk",
     3500
 );
+
+scheduleBackendChecks();
