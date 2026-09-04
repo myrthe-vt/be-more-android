@@ -9,6 +9,7 @@ const nativeShellRequested = pageParams.get("native") === "1";
 const HOLD_START_DELAY_MS = 120;
 const BACKEND_CHECK_INTERVAL_MS = 5000;
 const BACKEND_CHECK_TIMEOUT_MS = 3000;
+const TIMER_EVENT_CHECK_INTERVAL_MS = 1000;
 
 
 function getNativeBridge() {
@@ -673,6 +674,10 @@ let activePointerId = null;
 let backendOnline = true;
 let backendCheckTimer = null;
 
+let timerEventCheckTimer = null;
+let pendingTimerEvents = [];
+let processingTimerEvent = false;
+
 let currentAudio = null;
 
 let statusTimer = null;
@@ -893,6 +898,225 @@ function scheduleBackendChecks() {
         setInterval(
             checkBackendHealth,
             BACKEND_CHECK_INTERVAL_MS
+        );
+}
+
+
+/*
+ * Timer expiry events
+ */
+
+async function checkTimerEvents() {
+    if (
+        !backendOnline
+    ) {
+        return;
+    }
+
+    try {
+        const response =
+            await fetch(
+                "/api/timer-events",
+                {
+                    method:
+                        "GET",
+
+                    cache:
+                        "no-store",
+                }
+            );
+
+        if (
+            !response.ok
+        ) {
+            throw new Error(
+                `Timer events HTTP ${response.status}`
+            );
+        }
+
+        const data =
+            await response.json();
+
+        if (
+            Array.isArray(
+                data.events
+            ) &&
+            data.events.length >
+                0
+        ) {
+            for (
+                const event
+                of data.events
+            ) {
+                if (
+                    event &&
+                    event.event ===
+                        "timer_finished"
+                ) {
+                    pendingTimerEvents.push(
+                        event
+                    );
+                }
+            }
+
+            processPendingTimerEvents();
+        }
+
+    } catch (error) {
+        console.debug(
+            "Timer event check failed:",
+            error
+        );
+    }
+}
+
+
+async function processPendingTimerEvents() {
+    if (
+        processingTimerEvent ||
+        pendingTimerEvents.length ===
+            0
+    ) {
+        return;
+    }
+
+    /*
+     * Do not interrupt the user while they are actively talking.
+     * The event stays queued locally and will be played as soon as
+     * BMO is free.
+     */
+    if (
+        isRecording ||
+        recordingStartPending
+    ) {
+        return;
+    }
+
+    /*
+     * If BMO is already speaking, wait for that response to finish.
+     * playBMOAudio() will call us again from its ended handler.
+     */
+    if (
+        currentAudio ||
+        bmoRenderer.state ===
+            "speaking"
+    ) {
+        return;
+    }
+
+    const event =
+        pendingTimerEvents.shift();
+
+    if (
+        !event
+    ) {
+        return;
+    }
+
+    processingTimerEvent =
+        true;
+
+    const message =
+        String(
+            event.message ||
+            "Timer is up!"
+        );
+
+    showTranscript(
+        message,
+        3500
+    );
+
+    if (
+        "vibrate" in
+        navigator
+    ) {
+        navigator.vibrate(
+            [
+                120,
+                80,
+                120,
+            ]
+        );
+    }
+
+    if (
+        event.audio_url
+    ) {
+        try {
+            await playBMOAudio(
+                event.audio_url
+            );
+
+        } catch (error) {
+            console.error(
+                "Timer audio playback failed:",
+                error
+            );
+
+            processingTimerEvent =
+                false;
+
+            setFaceState(
+                "idle"
+            );
+
+            showStatus(
+                message,
+                3000
+            );
+
+            processPendingTimerEvents();
+        }
+
+        return;
+    }
+
+    processingTimerEvent =
+        false;
+
+    setFaceState(
+        "surprised"
+    );
+
+    showStatus(
+        message,
+        3000
+    );
+
+    setTimeout(
+        () => {
+            if (
+                !isRecording &&
+                !currentAudio
+            ) {
+                setFaceState(
+                    "idle"
+                );
+            }
+
+            processPendingTimerEvents();
+        },
+        3000
+    );
+}
+
+
+function scheduleTimerEventChecks() {
+    if (
+        timerEventCheckTimer
+    ) {
+        clearInterval(
+            timerEventCheckTimer
+        );
+    }
+
+    checkTimerEvents();
+
+    timerEventCheckTimer =
+        setInterval(
+            checkTimerEvents,
+            TIMER_EVENT_CHECK_INTERVAL_MS
         );
 }
 
@@ -1713,6 +1937,13 @@ async function playBMOAudio(
             currentAudio =
                 null;
 
+            if (
+                processingTimerEvent
+            ) {
+                processingTimerEvent =
+                    false;
+            }
+
             setFaceState(
                 "idle"
             );
@@ -1721,6 +1952,8 @@ async function playBMOAudio(
                 "Hold to talk",
                 1200
             );
+
+            processPendingTimerEvents();
         }
     );
 
@@ -1741,6 +1974,13 @@ async function playBMOAudio(
 
             currentAudio =
                 null;
+
+            if (
+                processingTimerEvent
+            ) {
+                processingTimerEvent =
+                    false;
+            }
 
             setFaceState(
                 "error"
@@ -1780,9 +2020,18 @@ async function playBMOAudio(
         currentAudio =
             null;
 
+        if (
+            processingTimerEvent
+        ) {
+            processingTimerEvent =
+                false;
+        }
+
         setFaceState(
             "idle"
         );
+
+        processPendingTimerEvents();
 
         showStatus(
             "Tap once, then try again",
@@ -2063,6 +2312,8 @@ window.onNativeRecordingStopped =
                 20
             );
         }
+
+        processPendingTimerEvents();
     };
 
 
@@ -2131,6 +2382,8 @@ window.onNativeNoSpeech =
             "I didn't catch that",
             1800
         );
+
+        processPendingTimerEvents();
     };
 
 
@@ -2213,3 +2466,4 @@ showStatus(
 );
 
 scheduleBackendChecks();
+scheduleTimerEventChecks();
