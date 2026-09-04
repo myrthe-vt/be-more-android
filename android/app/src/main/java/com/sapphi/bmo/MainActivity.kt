@@ -2,6 +2,8 @@ package com.sapphi.bmo
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.media.AudioFormat
+import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.os.Bundle
 import android.os.Handler
@@ -15,6 +17,12 @@ import android.webkit.WebViewClient
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.Response
+import okhttp3.WebSocket
+import okhttp3.WebSocketListener
+import okio.ByteString
 import org.json.JSONObject
 import java.io.BufferedReader
 import java.io.DataOutputStream
@@ -22,11 +30,19 @@ import java.io.File
 import java.io.InputStreamReader
 import java.net.HttpURLConnection
 import java.net.URL
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.util.UUID
+import java.util.concurrent.TimeUnit
+import android.util.Log
+
 
 class MainActivity : AppCompatActivity() {
 
     companion object {
+
+        private const val WAKE_LOG =
+            "BMO_WAKE"
         private const val AUDIO_PERMISSION_REQUEST =
             1001
 
@@ -44,7 +60,33 @@ class MainActivity : AppCompatActivity() {
 
         private const val TRANSCRIBE_URL =
             "$BMO_BASE_URL/api/transcribe"
+
+        private const val WAKEWORD_URL =
+            "ws://bmo-backend.example:8000/api/wakeword"
+
+        /*
+         * OpenWakeWord expects 16 kHz mono 16-bit PCM.
+         *
+         * Your Mac-side code works with 1280-sample chunks,
+         * which represent 80 ms of audio at 16 kHz.
+         */
+        private const val WAKE_SAMPLE_RATE =
+            16000
+
+        private const val WAKE_CHUNK_SAMPLES =
+            1280
+
+        /*
+         * After "Hey BMO" is detected, switch from the passive
+         * AudioRecord wake-word stream to the normal MediaRecorder
+         * command microphone. Record for this long, then submit the
+         * captured audio through the existing transcription/chat/TTS
+         * pipeline exactly like releasing push-to-talk.
+         */
+        private const val WAKE_COMMAND_RECORD_MS =
+            6000L
     }
+
 
     private lateinit var webView: WebView
 
@@ -52,6 +94,11 @@ class MainActivity : AppCompatActivity() {
         Handler(
             Looper.getMainLooper()
         )
+
+
+    /*
+     * Normal command recording
+     */
 
     private var recorder: MediaRecorder? =
         null
@@ -65,11 +112,63 @@ class MainActivity : AppCompatActivity() {
     private var startAfterPermission =
         false
 
+
+    /*
+     * Backend / page state
+     */
+
     private var showingBmoPage =
         false
 
     private var backendCheckRunning =
         false
+
+    private var bmoPageReady =
+        false
+
+
+    /*
+     * Wake-word audio state
+     */
+
+    private var wakeAudioRecord: AudioRecord? =
+        null
+
+    private var wakeAudioThread: Thread? =
+        null
+
+    @Volatile
+    private var wakeAudioRunning =
+        false
+
+    @Volatile
+    private var wakeWordTriggered =
+        false
+
+
+    /*
+     * Wake-word WebSocket
+     */
+
+    private var wakeWebSocket: WebSocket? =
+        null
+
+    private var wakeSocketConnected =
+        false
+
+
+    private val wakeHttpClient =
+        OkHttpClient
+            .Builder()
+            .connectTimeout(
+                5,
+                TimeUnit.SECONDS
+            )
+            .readTimeout(
+                0,
+                TimeUnit.MILLISECONDS
+            )
+            .build()
 
 
     private val retryRunnable =
@@ -86,6 +185,11 @@ class MainActivity : AppCompatActivity() {
     ) {
         super.onCreate(
             savedInstanceState
+        )
+
+        Log.i(
+            WAKE_LOG,
+            "MainActivity onCreate"
         )
 
         window.addFlags(
@@ -106,10 +210,7 @@ class MainActivity : AppCompatActivity() {
         setupWebView()
 
         /*
-         * Do NOT restore an old WebView state here.
-         *
-         * BMO's UI comes from the Mac backend, so Android should
-         * verify that the backend is really alive on every launch.
+         * Always verify the Mac before loading the remote BMO page.
          */
         showConnectingPage()
 
@@ -123,7 +224,42 @@ class MainActivity : AppCompatActivity() {
         )
 
         webView.webViewClient =
-            WebViewClient()
+            object : WebViewClient() {
+
+                override fun onPageFinished(
+                    view: WebView?,
+                    url: String?
+                ) {
+                    super.onPageFinished(
+                        view,
+                        url
+                    )
+
+                    Log.i(
+                        WAKE_LOG,
+                        "WebView finished: $url"
+                    )
+
+                    /*
+                     * LG's older Android WebView does not reliably report
+                     * onPageFinished() for the remote BMO page. Keep this
+                     * callback for diagnostics only. Wake-word startup is
+                     * now driven by the successful backend health check in
+                     * showBmoPage(), so it cannot get stuck behind this
+                     * callback.
+                     */
+                    if (
+                        url?.startsWith(
+                            BMO_BASE_URL
+                        ) == true
+                    ) {
+                        Log.i(
+                            WAKE_LOG,
+                            "Remote BMO page reported finished"
+                        )
+                    }
+                }
+            }
 
         webView.settings.apply {
             javaScriptEnabled =
@@ -135,11 +271,6 @@ class MainActivity : AppCompatActivity() {
             mediaPlaybackRequiresUserGesture =
                 false
 
-            /*
-             * Normal caching is okay once the backend has been
-             * confirmed alive. We no longer rely on WebView load
-             * failures for health detection.
-             */
             cacheMode =
                 WebSettings.LOAD_DEFAULT
 
@@ -182,9 +313,9 @@ class MainActivity : AppCompatActivity() {
 
 
     /*
-     * -------------------------------------------------------------------------
-     * Backend startup / reconnect logic
-     * -------------------------------------------------------------------------
+     * =====================================================================
+     * Backend startup / reconnect
+     * =====================================================================
      */
 
     private fun checkBackendAndUpdateUi() {
@@ -215,6 +346,8 @@ class MainActivity : AppCompatActivity() {
                     showBmoPage()
 
                 } else {
+                    stopWakeWordSystem()
+
                     showOfflinePage()
 
                     mainHandler.postDelayed(
@@ -279,10 +412,6 @@ class MainActivity : AppCompatActivity() {
             retryRunnable
         )
 
-        /*
-         * Avoid repeatedly reloading the real BMO page if it is
-         * already open.
-         */
         if (
             showingBmoPage &&
             webView.url
@@ -296,14 +425,53 @@ class MainActivity : AppCompatActivity() {
         showingBmoPage =
             true
 
+        /*
+         * The backend health check already succeeded, so the native
+         * wake-word system is allowed to start independently from
+         * WebView.onPageFinished().
+         *
+         * This matters on the LG G7 / Android 8 WebView, where the
+         * remote page can load successfully without us receiving the
+         * expected onPageFinished() callback.
+         */
+        bmoPageReady =
+            true
+
+        Log.i(
+            WAKE_LOG,
+            "Backend online; loading BMO page"
+        )
+
         webView.loadUrl(
             BMO_URL
+        )
+
+        /*
+         * Give the WebView a short head start for the visible face and
+         * JavaScript bridge, but do not make wake-word startup depend on
+         * the page-finished callback.
+         */
+        mainHandler.postDelayed(
+            {
+                Log.i(
+                    WAKE_LOG,
+                    "Starting wake system after backend check"
+                )
+
+                startWakeWordSystem()
+            },
+            750L
         )
     }
 
 
     private fun showConnectingPage() {
+        stopWakeWordSystem()
+
         showingBmoPage =
+            false
+
+        bmoPageReady =
             false
 
         val html =
@@ -374,7 +542,12 @@ class MainActivity : AppCompatActivity() {
 
 
     private fun showOfflinePage() {
+        stopWakeWordSystem()
+
         showingBmoPage =
+            false
+
+        bmoPageReady =
             false
 
         val html =
@@ -455,9 +628,617 @@ class MainActivity : AppCompatActivity() {
 
 
     /*
-     * -------------------------------------------------------------------------
+     * =====================================================================
+     * Wake word
+     * =====================================================================
+     */
+
+    private fun startWakeWordSystem() {
+        Log.i(
+            WAKE_LOG,
+            "startWakeWordSystem called: pageReady=$bmoPageReady isRecording=$isRecording wakeAudioRunning=$wakeAudioRunning"
+        )
+
+        if (
+            !bmoPageReady ||
+            isRecording ||
+            wakeAudioRunning
+        ) {
+            Log.i(
+                WAKE_LOG,
+                "Wake system not started because state is not ready"
+            )
+            return
+        }
+
+        if (
+            ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.RECORD_AUDIO
+            ) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            Log.i(
+                WAKE_LOG,
+                "Microphone permission missing"
+            )
+            /*
+             * Push-to-talk will still ask for permission normally.
+             * We don't trigger a surprise permission dialog solely
+             * because the page loaded.
+             */
+            return
+        }
+
+        wakeWordTriggered =
+            false
+
+        Log.i(
+            WAKE_LOG,
+            "Starting websocket connection"
+        )
+
+        connectWakeWebSocket()
+    }
+
+
+    private fun connectWakeWebSocket() {
+        Log.i(
+            WAKE_LOG,
+            "connectWakeWebSocket called"
+        )
+
+        if (
+            wakeWebSocket != null
+        ) {
+            return
+        }
+
+        Log.i(
+            WAKE_LOG,
+            "Connecting to $WAKEWORD_URL"
+        )
+
+        val request =
+            Request
+                .Builder()
+                .url(
+                    WAKEWORD_URL
+                )
+                .build()
+
+        wakeWebSocket =
+            wakeHttpClient.newWebSocket(
+                request,
+                object :
+                    WebSocketListener() {
+
+                    override fun onOpen(
+                        webSocket: WebSocket,
+                        response: Response
+                    ) {
+                        Log.i(
+                            WAKE_LOG,
+                            "WebSocket OPEN"
+                        )
+
+                        wakeSocketConnected =
+                            true
+
+                        runOnUiThread {
+                            startWakeAudioCapture()
+                        }
+                    }
+
+
+                    override fun onMessage(
+                        webSocket: WebSocket,
+                        text: String
+                    ) {
+                        handleWakeSocketMessage(
+                            text
+                        )
+                    }
+
+
+                    override fun onClosing(
+                        webSocket: WebSocket,
+                        code: Int,
+                        reason: String
+                    ) {
+                        wakeSocketConnected =
+                            false
+
+                        webSocket.close(
+                            code,
+                            reason
+                        )
+                    }
+
+
+                    override fun onClosed(
+                        webSocket: WebSocket,
+                        code: Int,
+                        reason: String
+                    ) {
+                        wakeSocketConnected =
+                            false
+
+                        wakeWebSocket =
+                            null
+                    }
+
+
+                    override fun onFailure(
+                        webSocket: WebSocket,
+                        throwable: Throwable,
+                        response: Response?
+                    ) {
+                        Log.e(
+                            WAKE_LOG,
+                            "WebSocket FAILED",
+                            throwable
+                        )
+
+                        wakeSocketConnected =
+                            false
+
+                        wakeWebSocket =
+                            null
+
+                        stopWakeAudioCapture()
+
+                        if (
+                            bmoPageReady &&
+                            !isRecording
+                        ) {
+                            mainHandler.postDelayed(
+                                {
+                                    startWakeWordSystem()
+                                },
+                                3000
+                            )
+                        }
+                    }
+                }
+            )
+    }
+
+
+    private fun startWakeAudioCapture() {
+        Log.i(
+            WAKE_LOG,
+            "startWakeAudioCapture called"
+        )
+
+        if (
+            wakeAudioRunning ||
+            isRecording ||
+            !wakeSocketConnected
+        ) {
+            return
+        }
+
+        if (
+            ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.RECORD_AUDIO
+            ) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            return
+        }
+
+        val minimumBuffer =
+            AudioRecord.getMinBufferSize(
+                WAKE_SAMPLE_RATE,
+                AudioFormat.CHANNEL_IN_MONO,
+                AudioFormat.ENCODING_PCM_16BIT
+            )
+
+        if (
+            minimumBuffer <= 0
+        ) {
+            return
+        }
+
+        /*
+         * Use several chunks of buffering so old Android audio
+         * hardware has some breathing room.
+         */
+        val bufferBytes =
+            maxOf(
+                minimumBuffer,
+                WAKE_CHUNK_SAMPLES *
+                        2 *
+                        4
+            )
+
+        try {
+            @Suppress(
+                "MissingPermission"
+            )
+            wakeAudioRecord =
+                AudioRecord(
+                    MediaRecorder.AudioSource.MIC,
+                    WAKE_SAMPLE_RATE,
+                    AudioFormat.CHANNEL_IN_MONO,
+                    AudioFormat.ENCODING_PCM_16BIT,
+                    bufferBytes
+                )
+
+            if (
+                wakeAudioRecord
+                    ?.state !=
+                AudioRecord.STATE_INITIALIZED
+            ) {
+                Log.e(
+                    WAKE_LOG,
+                    "AudioRecord failed to initialize"
+                )
+                stopWakeAudioCapture()
+
+                return
+            }
+
+            Log.i(
+                WAKE_LOG,
+                "AudioRecord initialized"
+            )
+
+            wakeAudioRecord
+                ?.startRecording()
+
+            Log.i(
+                WAKE_LOG,
+                "AudioRecord started"
+            )
+
+            wakeAudioRunning =
+                true
+
+            wakeAudioThread =
+                Thread {
+                    wakeAudioLoop()
+                }.apply {
+                    name =
+                        "BMO-WakeWord-Audio"
+
+                    start()
+                }
+
+        } catch (
+            exception: Exception
+        ) {
+            exception.printStackTrace()
+
+            stopWakeAudioCapture()
+        }
+    }
+
+
+    private fun wakeAudioLoop() {
+        Log.i(
+            WAKE_LOG,
+            "Wake audio loop started"
+        )
+
+        var firstChunkLogged =
+            false
+
+        val samples =
+            ShortArray(
+                WAKE_CHUNK_SAMPLES
+            )
+
+        while (
+            wakeAudioRunning
+        ) {
+            val audioRecord =
+                wakeAudioRecord
+                    ?: break
+
+            val samplesRead =
+                try {
+                    audioRecord.read(
+                        samples,
+                        0,
+                        samples.size
+                    )
+
+                } catch (
+                    _: Exception
+                ) {
+                    break
+                }
+
+            if (
+                samplesRead <= 0
+            ) {
+                continue
+            }
+
+            if (
+                !firstChunkLogged
+            ) {
+                firstChunkLogged =
+                    true
+
+                Log.i(
+                    WAKE_LOG,
+                    "First PCM chunk captured: $samplesRead samples"
+                )
+            }
+
+            /*
+             * OpenWakeWord expects a fixed-size 1280-sample
+             * chunk. If Android returns less than that, pad the
+             * remainder with silence.
+             */
+            val bytes =
+                ByteBuffer
+                    .allocate(
+                        WAKE_CHUNK_SAMPLES *
+                                2
+                    )
+                    .order(
+                        ByteOrder.LITTLE_ENDIAN
+                    )
+
+            for (
+            index in
+            0 until
+                    WAKE_CHUNK_SAMPLES
+            ) {
+                val sample =
+                    if (
+                        index <
+                        samplesRead
+                    ) {
+                        samples[index]
+
+                    } else {
+                        0
+                    }
+
+                bytes.putShort(
+                    sample
+                )
+            }
+
+            val socket =
+                wakeWebSocket
+
+            if (
+                socket == null ||
+                !wakeSocketConnected
+            ) {
+                break
+            }
+
+            val sent =
+                socket.send(
+                    ByteString.of(
+                        *bytes.array()
+                    )
+                )
+
+            if (
+                !sent
+            ) {
+                break
+            }
+        }
+
+        wakeAudioRunning =
+            false
+    }
+
+
+    private fun handleWakeSocketMessage(
+        message: String
+    ) {
+        try {
+            val json =
+                JSONObject(
+                    message
+                )
+
+            if (
+                json.optString(
+                    "event"
+                ) ==
+                "wakeword_detected"
+            ) {
+                handleWakeWordDetected(
+                    json.optString(
+                        "model"
+                    )
+                )
+            }
+
+        } catch (
+            exception: Exception
+        ) {
+            exception.printStackTrace()
+        }
+    }
+
+
+    private fun handleWakeWordDetected(
+        model: String
+    ) {
+        if (
+            wakeWordTriggered
+        ) {
+            return
+        }
+
+        wakeWordTriggered =
+            true
+
+        Log.i(
+            WAKE_LOG,
+            "Wake word detected on Android: $model"
+        )
+
+        /*
+         * The passive wake-word listener owns the microphone through
+         * AudioRecord. Release it before the normal MediaRecorder
+         * command capture takes over.
+         */
+        stopWakeWordSystem()
+
+        runOnUiThread {
+            val modelText =
+                JSONObject.quote(
+                    model
+                )
+
+            evaluateJavascript(
+                """
+                console.log(
+                    "Wake word detected: " +
+                    $modelText
+                );
+
+                if (
+                    typeof setFaceState ===
+                    "function"
+                ) {
+                    setFaceState(
+                        "listening"
+                    );
+                }
+
+                if (
+                    typeof showStatus ===
+                    "function"
+                ) {
+                    showStatus(
+                        "Listening...",
+                        0
+                    );
+                }
+                """.trimIndent()
+            )
+
+            /*
+             * Use the exact same recording pipeline as push-to-talk.
+             * Once this recorder stops, stopNativeRecording() uploads
+             * the file to /api/transcribe and face.js receives the
+             * transcript through window.onNativeTranscript().
+             */
+            Log.i(
+                WAKE_LOG,
+                "Starting automatic command recording"
+            )
+
+            startNativeRecording()
+
+            /*
+             * MediaRecorder needs a moment after the passive
+             * AudioRecord is released. startNativeRecording() is
+             * synchronous here, so if it succeeded isRecording will
+             * already be true.
+             */
+            if (
+                !isRecording
+            ) {
+                Log.e(
+                    WAKE_LOG,
+                    "Automatic command recording failed to start"
+                )
+
+                wakeWordTriggered =
+                    false
+
+                mainHandler.postDelayed(
+                    {
+                        startWakeWordSystem()
+                    },
+                    1000L
+                )
+
+                return@runOnUiThread
+            }
+
+            mainHandler.postDelayed(
+                {
+                    if (
+                        isRecording
+                    ) {
+                        Log.i(
+                            WAKE_LOG,
+                            "Automatic command recording complete; submitting"
+                        )
+
+                        stopNativeRecording()
+                    }
+                },
+                WAKE_COMMAND_RECORD_MS
+            )
+        }
+    }
+
+
+    private fun stopWakeAudioCapture() {
+        wakeAudioRunning =
+            false
+
+        try {
+            wakeAudioRecord
+                ?.stop()
+
+        } catch (
+            _: Exception
+        ) {
+        }
+
+        try {
+            wakeAudioRecord
+                ?.release()
+
+        } catch (
+            _: Exception
+        ) {
+        }
+
+        wakeAudioRecord =
+            null
+
+        wakeAudioThread =
+            null
+    }
+
+
+    private fun stopWakeWordSystem() {
+        stopWakeAudioCapture()
+
+        wakeSocketConnected =
+            false
+
+        try {
+            wakeWebSocket
+                ?.close(
+                    1000,
+                    "Wake listener stopping"
+                )
+
+        } catch (
+            _: Exception
+        ) {
+        }
+
+        wakeWebSocket =
+            null
+    }
+
+
+    /*
+     * =====================================================================
      * JavaScript bridge
-     * -------------------------------------------------------------------------
+     * =====================================================================
      */
 
     inner class BMOBridge {
@@ -465,6 +1246,12 @@ class MainActivity : AppCompatActivity() {
         @JavascriptInterface
         fun startRecording() {
             runOnUiThread {
+                /*
+                 * Push-to-talk always gets priority over passive
+                 * wake listening.
+                 */
+                stopWakeWordSystem()
+
                 startNativeRecording()
             }
         }
@@ -480,9 +1267,9 @@ class MainActivity : AppCompatActivity() {
 
 
     /*
-     * -------------------------------------------------------------------------
-     * Native microphone
-     * -------------------------------------------------------------------------
+     * =====================================================================
+     * Normal command microphone
+     * =====================================================================
      */
 
     private fun startNativeRecording() {
@@ -575,6 +1362,13 @@ class MainActivity : AppCompatActivity() {
             notifyJavascriptError(
                 "Microphone failed to start"
             )
+
+            mainHandler.postDelayed(
+                {
+                    startWakeWordSystem()
+                },
+                1000
+            )
         }
     }
 
@@ -594,8 +1388,7 @@ class MainActivity : AppCompatActivity() {
                 ?.stop()
 
         } catch (
-            exception:
-            RuntimeException
+            exception: RuntimeException
         ) {
             exception.printStackTrace()
 
@@ -606,6 +1399,13 @@ class MainActivity : AppCompatActivity() {
 
             notifyJavascriptError(
                 "Recording was too short"
+            )
+
+            mainHandler.postDelayed(
+                {
+                    startWakeWordSystem()
+                },
+                1000
             )
 
             return
@@ -623,6 +1423,13 @@ class MainActivity : AppCompatActivity() {
         ) {
             notifyJavascriptError(
                 "No microphone audio was recorded"
+            )
+
+            mainHandler.postDelayed(
+                {
+                    startWakeWordSystem()
+                },
+                1000
             )
 
             return
@@ -661,9 +1468,9 @@ class MainActivity : AppCompatActivity() {
 
 
     /*
-     * -------------------------------------------------------------------------
-     * Native recording upload
-     * -------------------------------------------------------------------------
+     * =====================================================================
+     * STT upload
+     * =====================================================================
      */
 
     private fun uploadRecording(
@@ -683,6 +1490,13 @@ class MainActivity : AppCompatActivity() {
                 ) {
                     runOnUiThread {
                         notifyJavascriptNoSpeech()
+
+                        mainHandler.postDelayed(
+                            {
+                                startWakeWordSystem()
+                            },
+                            1000
+                        )
                     }
 
                     return@Thread
@@ -704,6 +1518,13 @@ class MainActivity : AppCompatActivity() {
                 runOnUiThread {
                     notifyJavascriptError(
                         "Transcription failed"
+                    )
+
+                    mainHandler.postDelayed(
+                        {
+                            startWakeWordSystem()
+                        },
+                        2000
                     )
                 }
             }
@@ -820,7 +1641,6 @@ class MainActivity : AppCompatActivity() {
                     responseStream
                 )
             ).use { reader ->
-
                 reader.readText()
             }
 
@@ -850,15 +1670,17 @@ class MainActivity : AppCompatActivity() {
 
 
     /*
-     * -------------------------------------------------------------------------
+     * =====================================================================
      * JavaScript callbacks
-     * -------------------------------------------------------------------------
+     * =====================================================================
      */
 
     private fun notifyJavascriptRecordingStarted() {
         evaluateJavascript(
             """
-            if (window.onNativeRecordingStarted) {
+            if (
+                window.onNativeRecordingStarted
+            ) {
                 window.onNativeRecordingStarted();
             }
             """.trimIndent()
@@ -869,7 +1691,9 @@ class MainActivity : AppCompatActivity() {
     private fun notifyJavascriptThinking() {
         evaluateJavascript(
             """
-            if (window.onNativeRecordingStopped) {
+            if (
+                window.onNativeRecordingStopped
+            ) {
                 window.onNativeRecordingStopped();
             }
             """.trimIndent()
@@ -887,8 +1711,12 @@ class MainActivity : AppCompatActivity() {
 
         evaluateJavascript(
             """
-            if (window.onNativeTranscript) {
-                window.onNativeTranscript($quotedTranscript);
+            if (
+                window.onNativeTranscript
+            ) {
+                window.onNativeTranscript(
+                    $quotedTranscript
+                );
             }
             """.trimIndent()
         )
@@ -898,7 +1726,9 @@ class MainActivity : AppCompatActivity() {
     private fun notifyJavascriptNoSpeech() {
         evaluateJavascript(
             """
-            if (window.onNativeNoSpeech) {
+            if (
+                window.onNativeNoSpeech
+            ) {
                 window.onNativeNoSpeech();
             }
             """.trimIndent()
@@ -916,8 +1746,12 @@ class MainActivity : AppCompatActivity() {
 
         evaluateJavascript(
             """
-            if (window.onNativeMicError) {
-                window.onNativeMicError($quotedMessage);
+            if (
+                window.onNativeMicError
+            ) {
+                window.onNativeMicError(
+                    $quotedMessage
+                );
             }
             """.trimIndent()
         )
@@ -935,9 +1769,9 @@ class MainActivity : AppCompatActivity() {
 
 
     /*
-     * -------------------------------------------------------------------------
+     * =====================================================================
      * Permissions
-     * -------------------------------------------------------------------------
+     * =====================================================================
      */
 
     override fun onRequestPermissionsResult(
@@ -979,14 +1813,30 @@ class MainActivity : AppCompatActivity() {
                     "Microphone permission denied"
                 )
             }
+
+            /*
+             * If the user just granted mic access through PTT,
+             * wake-word listening becomes available too.
+             */
+            if (
+                granted &&
+                !isRecording
+            ) {
+                mainHandler.postDelayed(
+                    {
+                        startWakeWordSystem()
+                    },
+                    1000
+                )
+            }
         }
     }
 
 
     /*
-     * -------------------------------------------------------------------------
-     * Immersive UI
-     * -------------------------------------------------------------------------
+     * =====================================================================
+     * Appliance UI
+     * =====================================================================
      */
 
     private fun hideSystemUI() {
@@ -1025,10 +1875,26 @@ class MainActivity : AppCompatActivity() {
 
         hideSystemUI()
 
-        /*
-         * Re-check every time BMO returns to the foreground.
-         */
         checkBackendAndUpdateUi()
+
+        if (
+            bmoPageReady &&
+            !isRecording
+        ) {
+            mainHandler.postDelayed(
+                {
+                    startWakeWordSystem()
+                },
+                1000
+            )
+        }
+    }
+
+
+    override fun onPause() {
+        stopWakeWordSystem()
+
+        super.onPause()
     }
 
 
@@ -1036,6 +1902,8 @@ class MainActivity : AppCompatActivity() {
         mainHandler.removeCallbacks(
             retryRunnable
         )
+
+        stopWakeWordSystem()
 
         if (
             isRecording
@@ -1051,6 +1919,11 @@ class MainActivity : AppCompatActivity() {
         }
 
         cleanupRecorder()
+
+        wakeHttpClient
+            .dispatcher
+            .executorService
+            .shutdown()
 
         super.onDestroy()
     }
