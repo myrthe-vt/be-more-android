@@ -6,13 +6,27 @@ const transcriptElement = document.getElementById("transcript");
 const pageParams = new URLSearchParams(window.location.search);
 const nativeShellRequested = pageParams.get("native") === "1";
 
+/*
+ * A very short delay prevents accidental taps from starting the mic.
+ *
+ * 120 ms still feels essentially instant when deliberately holding
+ * BMO to talk.
+ */
+const HOLD_START_DELAY_MS = 120;
+
 function getNativeBridge() {
     try {
-        if (typeof window.AndroidBMO !== "undefined" && window.AndroidBMO) {
+        if (
+            typeof window.AndroidBMO !== "undefined" &&
+            window.AndroidBMO
+        ) {
             return window.AndroidBMO;
         }
     } catch (error) {
-        console.error("Android bridge unavailable:", error);
+        console.error(
+            "Android bridge unavailable:",
+            error
+        );
     }
 
     return null;
@@ -53,61 +67,144 @@ class BMOFaceRenderer {
         this.eyeOffsetX = 0;
         this.eyeOffsetY = 0;
         this.eyePulseR = 0;
+
         this.mouthOpen = 0;
     }
 
     clear() {
         this.ctx.fillStyle = this.colors.bg;
-        this.ctx.fillRect(0, 0, this.width, this.height);
+
+        this.ctx.fillRect(
+            0,
+            0,
+            this.width,
+            this.height
+        );
     }
 
-    drawArc(cx, cy, r, start, end, width = 12) {
+    drawArc(
+        cx,
+        cy,
+        r,
+        start,
+        end,
+        width = 12
+    ) {
         this.ctx.beginPath();
-        this.ctx.arc(cx, cy, r, start, end);
 
-        this.ctx.strokeStyle = this.colors.line;
-        this.ctx.lineWidth = width;
-        this.ctx.lineCap = "round";
+        this.ctx.arc(
+            cx,
+            cy,
+            r,
+            start,
+            end
+        );
+
+        this.ctx.strokeStyle =
+            this.colors.line;
+
+        this.ctx.lineWidth =
+            width;
+
+        this.ctx.lineCap =
+            "round";
+
         this.ctx.stroke();
     }
 
-    drawCircle(cx, cy, r, filled = true) {
+    drawCircle(
+        cx,
+        cy,
+        r,
+        filled = true
+    ) {
         this.ctx.beginPath();
-        this.ctx.arc(cx, cy, r, 0, Math.PI * 2);
+
+        this.ctx.arc(
+            cx,
+            cy,
+            r,
+            0,
+            Math.PI * 2
+        );
 
         if (filled) {
-            this.ctx.fillStyle = this.colors.line;
+            this.ctx.fillStyle =
+                this.colors.line;
+
             this.ctx.fill();
+
         } else {
-            this.ctx.strokeStyle = this.colors.line;
-            this.ctx.lineWidth = 12;
+            this.ctx.strokeStyle =
+                this.colors.line;
+
+            this.ctx.lineWidth =
+                12;
+
             this.ctx.stroke();
         }
     }
 
-    drawLine(x1, y1, x2, y2, width = 12) {
+    drawLine(
+        x1,
+        y1,
+        x2,
+        y2,
+        width = 12
+    ) {
         this.ctx.beginPath();
-        this.ctx.moveTo(x1, y1);
-        this.ctx.lineTo(x2, y2);
 
-        this.ctx.strokeStyle = this.colors.line;
-        this.ctx.lineWidth = width;
-        this.ctx.lineCap = "round";
+        this.ctx.moveTo(
+            x1,
+            y1
+        );
+
+        this.ctx.lineTo(
+            x2,
+            y2
+        );
+
+        this.ctx.strokeStyle =
+            this.colors.line;
+
+        this.ctx.lineWidth =
+            width;
+
+        this.ctx.lineCap =
+            "round";
+
         this.ctx.stroke();
     }
 
-    drawMouth(type, height = 0, width = this.mouthW) {
-        const centerX = this.width / 2;
-        const centerY = this.mouthY;
-        const halfWidth = width / 2;
+    drawMouth(
+        type,
+        height = 0,
+        width = this.mouthW
+    ) {
+        const centerX =
+            this.width / 2;
 
-        this.ctx.lineWidth = 12;
-        this.ctx.strokeStyle = this.colors.line;
-        this.ctx.lineCap = "round";
+        const centerY =
+            this.mouthY;
+
+        const halfWidth =
+            width / 2;
+
+        this.ctx.lineWidth =
+            12;
+
+        this.ctx.strokeStyle =
+            this.colors.line;
+
+        this.ctx.lineCap =
+            "round";
 
         if (
             type === "straight" ||
-            (type === "speaking" && height === 0)
+            (
+                type === "speaking" &&
+                height === 0
+            )
         ) {
             this.drawLine(
                 centerX - halfWidth,
@@ -115,11 +212,13 @@ class BMOFaceRenderer {
                 centerX + halfWidth,
                 centerY
             );
+
             return;
         }
 
         if (type === "smile") {
             this.ctx.beginPath();
+
             this.ctx.arc(
                 centerX,
                 centerY - 25,
@@ -127,12 +226,15 @@ class BMOFaceRenderer {
                 Math.PI * 0.15,
                 Math.PI * 0.85
             );
+
             this.ctx.stroke();
+
             return;
         }
 
         if (type === "frown") {
             this.ctx.beginPath();
+
             this.ctx.arc(
                 centerX,
                 centerY + 15,
@@ -140,14 +242,18 @@ class BMOFaceRenderer {
                 Math.PI * 1.15,
                 Math.PI * 1.85
             );
+
             this.ctx.stroke();
+
             return;
         }
 
         if (type === "speaking") {
-            const radius = height / 2;
+            const radius =
+                height / 2;
 
             this.ctx.beginPath();
+
             this.ctx.roundRect(
                 centerX - halfWidth,
                 centerY - radius,
@@ -156,14 +262,18 @@ class BMOFaceRenderer {
                 radius
             );
 
-            this.ctx.fillStyle = this.colors.mouthDark;
+            this.ctx.fillStyle =
+                this.colors.mouthDark;
+
             this.ctx.fill();
             this.ctx.stroke();
 
             if (height > 25) {
-                this.ctx.fillStyle = this.colors.teeth;
+                this.ctx.fillStyle =
+                    this.colors.teeth;
 
                 this.ctx.beginPath();
+
                 this.ctx.roundRect(
                     centerX - halfWidth + 10,
                     centerY - radius + 5,
@@ -171,13 +281,16 @@ class BMOFaceRenderer {
                     height / 4,
                     4
                 );
+
                 this.ctx.fill();
             }
 
             if (height > 40) {
-                this.ctx.fillStyle = this.colors.tongue;
+                this.ctx.fillStyle =
+                    this.colors.tongue;
 
                 this.ctx.beginPath();
+
                 this.ctx.ellipse(
                     centerX,
                     centerY + radius - 8,
@@ -187,6 +300,7 @@ class BMOFaceRenderer {
                     0,
                     Math.PI * 2
                 );
+
                 this.ctx.fill();
             }
         }
@@ -195,173 +309,323 @@ class BMOFaceRenderer {
     render() {
         this.clear();
 
-        const frame = this.frame++;
+        const frame =
+            this.frame++;
 
-        let eyeType = "regular";
-        let mouthType = "straight";
-        let currentHeight = 0;
-        let currentWidth = this.mouthW;
+        let eyeType =
+            "regular";
 
-        if (!["sleepy", "thinking", "listening"].includes(this.state)) {
-            const blinkFrame = frame % 170;
+        let mouthType =
+            "straight";
+
+        let currentHeight =
+            0;
+
+        let currentWidth =
+            this.mouthW;
+
+        /*
+         * Blinking
+         */
+        if (
+            ![
+                "sleepy",
+                "thinking",
+                "listening",
+            ].includes(this.state)
+        ) {
+            const blinkFrame =
+                frame % 170;
 
             if (blinkFrame < 5) {
                 this.blink = 1;
-            } else if (blinkFrame < 8) {
+
+            } else if (
+                blinkFrame < 8
+            ) {
                 this.blink = 0.5;
+
             } else {
                 this.blink = 0;
             }
-        } else if (this.state === "sleepy") {
+
+        } else if (
+            this.state === "sleepy"
+        ) {
             this.blink = 1;
         }
 
-        if (this.state === "idle") {
-            const movement = frame % 360;
+        /*
+         * Idle eye movement
+         */
+        if (
+            this.state === "idle"
+        ) {
+            const movement =
+                frame % 360;
 
             if (movement < 60) {
-                this.eyeOffsetX = -10;
-            } else if (movement < 120) {
-                this.eyeOffsetX = 0;
-            } else if (movement < 180) {
-                this.eyeOffsetX = 10;
+                this.eyeOffsetX =
+                    -10;
+
+            } else if (
+                movement < 120
+            ) {
+                this.eyeOffsetX =
+                    0;
+
+            } else if (
+                movement < 180
+            ) {
+                this.eyeOffsetX =
+                    10;
+
             } else {
-                this.eyeOffsetX = 0;
+                this.eyeOffsetX =
+                    0;
             }
         }
 
-        if (this.state === "thinking") {
-            this.eyeOffsetX = Math.sin(frame * 0.18) * 15;
+        /*
+         * Thinking animation
+         */
+        if (
+            this.state ===
+            "thinking"
+        ) {
+            this.eyeOffsetX =
+                Math.sin(
+                    frame * 0.18
+                ) * 15;
         }
 
-        if (this.state === "listening") {
-            this.eyePulseR = Math.sin(frame * 0.2) * 2;
-            eyeType = "circle";
+        /*
+         * Listening animation
+         */
+        if (
+            this.state ===
+            "listening"
+        ) {
+            this.eyePulseR =
+                Math.sin(
+                    frame * 0.2
+                ) * 2;
+
+            eyeType =
+                "circle";
         }
 
-        if (this.state === "speaking") {
-            eyeType = "circle";
-            mouthType = "speaking";
+        /*
+         * Speaking animation
+         */
+        if (
+            this.state ===
+            "speaking"
+        ) {
+            eyeType =
+                "circle";
 
-            if (this.mouthOpen > 0.5) {
-                currentHeight = Math.min(
-                    65,
-                    this.mouthOpen * 1.5
-                );
+            mouthType =
+                "speaking";
 
-                currentWidth = Math.min(
-                    105,
-                    80 + this.mouthOpen * 0.5
-                );
+            if (
+                this.mouthOpen >
+                0.5
+            ) {
+                currentHeight =
+                    Math.min(
+                        65,
+                        this.mouthOpen *
+                            1.5
+                    );
+
+                currentWidth =
+                    Math.min(
+                        105,
+                        80 +
+                            this.mouthOpen *
+                            0.5
+                    );
+
             } else {
-                currentHeight = 0;
-                currentWidth = this.mouthW;
+                currentHeight =
+                    0;
+
+                currentWidth =
+                    this.mouthW;
             }
         }
 
+        /*
+         * Emotional expressions
+         */
         switch (this.state) {
             case "happy":
-                eyeType = "happy";
-                mouthType = "smile";
+                eyeType =
+                    "happy";
+
+                mouthType =
+                    "smile";
+
                 break;
 
             case "sad":
             case "error":
-                eyeType = "sad";
-                mouthType = "frown";
+                eyeType =
+                    "sad";
+
+                mouthType =
+                    "frown";
+
                 break;
 
             case "angry":
-                eyeType = "angry";
-                mouthType = "straight";
+                eyeType =
+                    "angry";
+
+                mouthType =
+                    "straight";
+
                 break;
 
             case "surprised":
-                eyeType = "circle";
-                mouthType = "speaking";
-                currentHeight = 40;
-                currentWidth = 60;
+                eyeType =
+                    "circle";
+
+                mouthType =
+                    "speaking";
+
+                currentHeight =
+                    40;
+
+                currentWidth =
+                    60;
+
                 break;
 
             case "sleepy":
-                eyeType = "closed";
+                eyeType =
+                    "closed";
+
                 break;
 
             case "daydream":
-                eyeType = "regular";
-                this.eyeOffsetY = -10;
+                eyeType =
+                    "regular";
+
+                this.eyeOffsetY =
+                    -10;
+
                 break;
         }
 
-        const drawEye = (x, y) => {
-            let radius = this.eyeR;
+        const drawEye =
+            (x, y) => {
+                let radius =
+                    this.eyeR;
 
-            if (this.state === "listening") {
-                radius += this.eyePulseR;
-            }
+                if (
+                    this.state ===
+                    "listening"
+                ) {
+                    radius +=
+                        this.eyePulseR;
+                }
 
-            if (this.blink >= 0.9 || eyeType === "closed") {
-                this.drawLine(
-                    x - radius,
-                    y,
-                    x + radius,
-                    y
-                );
-            } else if (this.blink > 0) {
-                this.drawArc(
-                    x,
-                    y,
-                    radius,
-                    -0.2,
-                    Math.PI + 0.2
-                );
-            } else if (eyeType === "happy") {
-                this.drawArc(
-                    x,
-                    y + 10,
-                    radius,
-                    Math.PI,
-                    Math.PI * 2
-                );
-            } else if (eyeType === "circle") {
-                this.drawCircle(
-                    x,
-                    y,
-                    radius - 2
-                );
-            } else if (eyeType === "sad") {
-                this.drawLine(
-                    x - 15,
-                    y + 10,
-                    x + 15,
-                    y - 5
-                );
-            } else if (eyeType === "angry") {
-                this.drawLine(
-                    x - 15,
-                    y - 5,
-                    x + 15,
-                    y + 10
-                );
-            } else {
-                this.drawArc(
-                    x,
-                    y,
-                    radius,
-                    -0.4,
-                    Math.PI + 0.4
-                );
-            }
-        };
+                if (
+                    this.blink >=
+                        0.9 ||
+                    eyeType ===
+                        "closed"
+                ) {
+                    this.drawLine(
+                        x - radius,
+                        y,
+                        x + radius,
+                        y
+                    );
+
+                } else if (
+                    this.blink >
+                    0
+                ) {
+                    this.drawArc(
+                        x,
+                        y,
+                        radius,
+                        -0.2,
+                        Math.PI +
+                            0.2
+                    );
+
+                } else if (
+                    eyeType ===
+                    "happy"
+                ) {
+                    this.drawArc(
+                        x,
+                        y + 10,
+                        radius,
+                        Math.PI,
+                        Math.PI * 2
+                    );
+
+                } else if (
+                    eyeType ===
+                    "circle"
+                ) {
+                    this.drawCircle(
+                        x,
+                        y,
+                        radius - 2
+                    );
+
+                } else if (
+                    eyeType ===
+                    "sad"
+                ) {
+                    this.drawLine(
+                        x - 15,
+                        y + 10,
+                        x + 15,
+                        y - 5
+                    );
+
+                } else if (
+                    eyeType ===
+                    "angry"
+                ) {
+                    this.drawLine(
+                        x - 15,
+                        y - 5,
+                        x + 15,
+                        y + 10
+                    );
+
+                } else {
+                    this.drawArc(
+                        x,
+                        y,
+                        radius,
+                        -0.4,
+                        Math.PI +
+                            0.4
+                    );
+                }
+            };
 
         drawEye(
-            this.leftEyeX + this.eyeOffsetX,
-            this.eyeY + this.eyeOffsetY
+            this.leftEyeX +
+                this.eyeOffsetX,
+            this.eyeY +
+                this.eyeOffsetY
         );
 
         drawEye(
-            this.rightEyeX + this.eyeOffsetX,
-            this.eyeY + this.eyeOffsetY
+            this.rightEyeX +
+                this.eyeOffsetX,
+            this.eyeY +
+                this.eyeOffsetY
         );
 
         this.drawMouth(
@@ -370,16 +634,25 @@ class BMOFaceRenderer {
             currentWidth
         );
 
-        requestAnimationFrame(() => this.render());
+        requestAnimationFrame(
+            () =>
+                this.render()
+        );
     }
 }
 
 
 const bmoRenderer =
-    new BMOFaceRenderer(faceCanvas);
+    new BMOFaceRenderer(
+        faceCanvas
+    );
 
 bmoRenderer.render();
 
+
+/*
+ * Runtime state
+ */
 
 let conversationHistory = [];
 
@@ -388,8 +661,15 @@ let microphoneStream = null;
 let audioChunks = [];
 
 let isRecording = false;
+let recordingStartPending = false;
+
+let holdStartTimer = null;
+let activePointerId = null;
 
 let currentAudio = null;
+let currentAudioSource = null;
+
+let playbackGeneration = 0;
 
 let statusTimer = null;
 let transcriptTimer = null;
@@ -416,34 +696,77 @@ function setFaceState(state) {
 }
 
 
-function showStatus(text, duration = 1800) {
+function showStatus(
+    text,
+    duration = 1800
+) {
     clearTimeout(statusTimer);
 
-    statusMessage.textContent = text;
-    statusMessage.classList.remove("hidden");
+    statusMessage.textContent =
+        text;
+
+    statusMessage.classList.remove(
+        "hidden"
+    );
 
     if (duration > 0) {
-        statusTimer = setTimeout(
-            () => {
-                statusMessage.classList.add("hidden");
-            },
-            duration
-        );
+        statusTimer =
+            setTimeout(
+                () => {
+                    statusMessage.classList.add(
+                        "hidden"
+                    );
+                },
+                duration
+            );
     }
 }
 
 
-function showTranscript(text, duration = 2500) {
-    clearTimeout(transcriptTimer);
+function showTranscript(
+    text,
+    duration = 2500
+) {
+    clearTimeout(
+        transcriptTimer
+    );
 
-    transcriptElement.textContent = text;
-    transcriptElement.classList.add("visible");
+    transcriptElement.textContent =
+        text;
 
-    transcriptTimer = setTimeout(
+    transcriptElement.classList.add(
+        "visible"
+    );
+
+    transcriptTimer =
+        setTimeout(
+            () => {
+                transcriptElement.classList.remove(
+                    "visible"
+                );
+            },
+            duration
+        );
+}
+
+
+function recoverToIdle(
+    delay = 1500
+) {
+    setTimeout(
         () => {
-            transcriptElement.classList.remove("visible");
+            if (
+                !isRecording &&
+                !recordingStartPending &&
+                bmoRenderer.state !==
+                    "speaking"
+            ) {
+                setFaceState(
+                    "idle"
+                );
+            }
         },
-        duration
+        delay
     );
 }
 
@@ -453,20 +776,30 @@ function showTranscript(text, duration = 2500) {
  */
 
 async function requestWakeLock() {
-    if (!("wakeLock" in navigator) || wakeLock) {
+    if (
+        !(
+            "wakeLock" in
+            navigator
+        ) ||
+        wakeLock
+    ) {
         return;
     }
 
     try {
         wakeLock =
-            await navigator.wakeLock.request("screen");
+            await navigator.wakeLock.request(
+                "screen"
+            );
 
         wakeLock.addEventListener(
             "release",
             () => {
-                wakeLock = null;
+                wakeLock =
+                    null;
             }
         );
+
     } catch (error) {
         console.debug(
             "Wake lock unavailable:",
@@ -477,7 +810,7 @@ async function requestWakeLock() {
 
 
 /*
- * Pick the best audio format the browser supports.
+ * Browser recorder format
  */
 
 function getRecorderOptions() {
@@ -487,13 +820,19 @@ function getRecorderOptions() {
         "audio/mp4",
     ];
 
-    for (const mimeType of candidates) {
+    for (
+        const mimeType
+        of candidates
+    ) {
         if (
             window.MediaRecorder &&
-            MediaRecorder.isTypeSupported(mimeType)
+            MediaRecorder.isTypeSupported(
+                mimeType
+            )
         ) {
             return {
-                mimeType: mimeType,
+                mimeType:
+                    mimeType,
             };
         }
     }
@@ -503,69 +842,172 @@ function getRecorderOptions() {
 
 
 /*
+ * Audio cleanup
+ */
+
+function disconnectVisualizer() {
+    bmoRenderer.mouthOpen =
+        0;
+
+    if (
+        currentAudioSource
+    ) {
+        try {
+            currentAudioSource.disconnect();
+        } catch (_) {
+        }
+
+        currentAudioSource =
+            null;
+    }
+
+    if (
+        analyser
+    ) {
+        try {
+            analyser.disconnect();
+        } catch (_) {
+        }
+
+        analyser =
+            null;
+    }
+
+    dataArray =
+        null;
+}
+
+
+function stopCurrentAudio() {
+    /*
+     * Incrementing this invalidates listeners belonging to
+     * the previous playback session.
+     */
+    playbackGeneration++;
+
+    disconnectVisualizer();
+
+    if (
+        currentAudio
+    ) {
+        try {
+            currentAudio.pause();
+        } catch (_) {
+        }
+
+        try {
+            currentAudio.currentTime =
+                0;
+        } catch (_) {
+        }
+
+        currentAudio =
+            null;
+    }
+
+    bmoRenderer.mouthOpen =
+        0;
+}
+
+
+/*
  * Recording
  */
 
 async function startRecording() {
-    if (isRecording) {
+    if (
+        isRecording ||
+        recordingStartPending
+    ) {
         return;
     }
+
+    /*
+     * If BMO was speaking, this is barge-in.
+     *
+     * Stop speech immediately before opening the microphone.
+     */
+    if (
+        bmoRenderer.state ===
+            "speaking" ||
+        currentAudio
+    ) {
+        stopCurrentAudio();
+    }
+
+    recordingStartPending =
+        true;
 
     const nativeBridge =
         getNativeBridge();
 
-    if (nativeBridge) {
+    if (
+        nativeBridge
+    ) {
         try {
             nativeBridge.startRecording();
+
+            /*
+             * Native Android sets isRecording=true when
+             * onNativeRecordingStarted() arrives.
+             */
+
             return;
+
         } catch (error) {
+            recordingStartPending =
+                false;
+
             console.error(
                 "Native microphone bridge failed:",
                 error
             );
 
-            setFaceState("error");
+            setFaceState(
+                "error"
+            );
 
             showStatus(
                 "Microphone connection failed",
                 2500
             );
 
-            setTimeout(
-                () => setFaceState("idle"),
-                1500
-            );
+            recoverToIdle();
 
             return;
         }
     }
 
     /*
-     * If this page is inside the Android app, never silently fall back
-     * to browser getUserMedia(). The native bridge is the microphone path.
+     * The native Android shell should never fall back to
+     * browser getUserMedia().
      */
-    if (nativeShellRequested) {
+    if (
+        nativeShellRequested
+    ) {
+        recordingStartPending =
+            false;
+
         console.error(
             "Android microphone bridge is missing."
         );
 
-        setFaceState("error");
+        setFaceState(
+            "error"
+        );
 
         showStatus(
             "Microphone connection failed",
             2500
         );
 
-        setTimeout(
-            () => setFaceState("idle"),
-            1500
-        );
+        recoverToIdle();
 
         return;
     }
 
     /*
-     * Browser fallback for desktop/mobile browsers.
+     * Browser fallback
      */
     try {
         await requestWakeLock();
@@ -583,9 +1025,14 @@ async function startRecording() {
             await navigator.mediaDevices.getUserMedia(
                 {
                     audio: {
-                        echoCancellation: true,
-                        noiseSuppression: true,
-                        autoGainControl: true,
+                        echoCancellation:
+                            true,
+
+                        noiseSuppression:
+                            true,
+
+                        autoGainControl:
+                            true,
                     },
                 }
             );
@@ -601,8 +1048,13 @@ async function startRecording() {
         mediaRecorder.addEventListener(
             "dataavailable",
             (event) => {
-                if (event.data.size > 0) {
-                    audioChunks.push(event.data);
+                if (
+                    event.data.size >
+                    0
+                ) {
+                    audioChunks.push(
+                        event.data
+                    );
                 }
             }
         );
@@ -618,11 +1070,14 @@ async function startRecording() {
                     new Blob(
                         audioChunks,
                         {
-                            type: mimeType,
+                            type:
+                                mimeType,
                         }
                     );
 
-                if (microphoneStream) {
+                if (
+                    microphoneStream
+                ) {
                     for (
                         const track
                         of microphoneStream.getTracks()
@@ -630,83 +1085,162 @@ async function startRecording() {
                         track.stop();
                     }
 
-                    microphoneStream = null;
+                    microphoneStream =
+                        null;
                 }
 
-                await sendAudioToBMO(blob);
+                mediaRecorder =
+                    null;
+
+                await sendAudioToBMO(
+                    blob
+                );
             }
         );
 
         mediaRecorder.start();
 
-        isRecording = true;
+        recordingStartPending =
+            false;
 
-        setFaceState("listening");
+        isRecording =
+            true;
+
+        setFaceState(
+            "listening"
+        );
 
         showStatus(
             "Listening...",
             0
         );
 
-        if ("vibrate" in navigator) {
-            navigator.vibrate(30);
+        if (
+            "vibrate" in
+            navigator
+        ) {
+            navigator.vibrate(
+                30
+            );
         }
+
     } catch (error) {
+        recordingStartPending =
+            false;
+
+        isRecording =
+            false;
+
         console.error(
             "Browser microphone error:",
             error
         );
 
-        setFaceState("error");
+        if (
+            microphoneStream
+        ) {
+            for (
+                const track
+                of microphoneStream.getTracks()
+            ) {
+                track.stop();
+            }
+
+            microphoneStream =
+                null;
+        }
+
+        setFaceState(
+            "error"
+        );
 
         showStatus(
             "Microphone unavailable",
             3000
         );
 
-        setTimeout(
-            () => setFaceState("idle"),
-            1500
-        );
+        recoverToIdle();
     }
 }
 
 
 function stopRecording() {
+    /*
+     * If recording has not actually started yet, do nothing.
+     *
+     * This protects against very short taps.
+     */
+    if (
+        recordingStartPending &&
+        !isRecording
+    ) {
+        return;
+    }
+
     const nativeBridge =
         getNativeBridge();
 
-    if (nativeBridge) {
+    if (
+        nativeBridge
+    ) {
+        if (
+            !isRecording
+        ) {
+            return;
+        }
+
         try {
             nativeBridge.stopRecording();
+
         } catch (error) {
+            isRecording =
+                false;
+
+            recordingStartPending =
+                false;
+
             console.error(
                 "Native microphone stop failed:",
                 error
             );
 
-            setFaceState("error");
+            setFaceState(
+                "error"
+            );
 
             showStatus(
                 "Microphone connection failed",
                 2500
             );
+
+            recoverToIdle();
         }
 
         return;
     }
 
-    if (nativeShellRequested) {
+    if (
+        nativeShellRequested
+    ) {
         return;
     }
 
-    if (!mediaRecorder || !isRecording) {
+    if (
+        !mediaRecorder ||
+        !isRecording
+    ) {
         return;
     }
 
-    isRecording = false;
+    isRecording =
+        false;
 
-    setFaceState("thinking");
+    recordingStartPending =
+        false;
+
+    setFaceState(
+        "thinking"
+    );
 
     showStatus(
         "Thinking...",
@@ -715,8 +1249,148 @@ function stopRecording() {
 
     mediaRecorder.stop();
 
-    if ("vibrate" in navigator) {
-        navigator.vibrate(20);
+    if (
+        "vibrate" in
+        navigator
+    ) {
+        navigator.vibrate(
+            20
+        );
+    }
+}
+
+
+/*
+ * Hold gesture
+ */
+
+function cancelPendingHold() {
+    if (
+        holdStartTimer
+    ) {
+        clearTimeout(
+            holdStartTimer
+        );
+
+        holdStartTimer =
+            null;
+    }
+
+    if (
+        recordingStartPending &&
+        !isRecording
+    ) {
+        recordingStartPending =
+            false;
+    }
+}
+
+
+function beginHold(
+    event
+) {
+    if (
+        activePointerId !==
+        null
+    ) {
+        return;
+    }
+
+    activePointerId =
+        event.pointerId;
+
+    /*
+     * Barge-in should feel immediate.
+     *
+     * Silence BMO on pointer-down, even though microphone
+     * recording itself waits for the tiny hold threshold.
+     */
+    if (
+        bmoRenderer.state ===
+            "speaking" ||
+        currentAudio
+    ) {
+        stopCurrentAudio();
+
+        setFaceState(
+            "idle"
+        );
+
+        showStatus(
+            "Hold to talk",
+            0
+        );
+    }
+
+    if (
+        screen.setPointerCapture
+    ) {
+        try {
+            screen.setPointerCapture(
+                event.pointerId
+            );
+        } catch (_) {
+        }
+    }
+
+    holdStartTimer =
+        setTimeout(
+            async () => {
+                holdStartTimer =
+                    null;
+
+                await startRecording();
+            },
+            HOLD_START_DELAY_MS
+        );
+}
+
+
+function endHold(
+    event = null
+) {
+    if (
+        event &&
+        activePointerId !==
+            null &&
+        event.pointerId !==
+            activePointerId
+    ) {
+        return;
+    }
+
+    const timerWasPending =
+        holdStartTimer !==
+        null;
+
+    cancelPendingHold();
+
+    activePointerId =
+        null;
+
+    /*
+     * A tap shorter than HOLD_START_DELAY_MS never opened
+     * the microphone, so there is nothing to stop.
+     */
+    if (
+        timerWasPending
+    ) {
+        setFaceState(
+            "idle"
+        );
+
+        showStatus(
+            "Hold to talk",
+            1000
+        );
+
+        return;
+    }
+
+    if (
+        isRecording
+    ) {
+        stopRecording();
     }
 }
 
@@ -725,14 +1399,22 @@ function stopRecording() {
  * STT
  */
 
-async function sendAudioToBMO(blob) {
+async function sendAudioToBMO(
+    blob
+) {
     const formData =
         new FormData();
 
-    let extension = "webm";
+    let extension =
+        "webm";
 
-    if (blob.type.includes("mp4")) {
-        extension = "mp4";
+    if (
+        blob.type.includes(
+            "mp4"
+        )
+    ) {
+        extension =
+            "mp4";
     }
 
     formData.append(
@@ -746,12 +1428,17 @@ async function sendAudioToBMO(blob) {
             await fetch(
                 "/api/transcribe",
                 {
-                    method: "POST",
-                    body: formData,
+                    method:
+                        "POST",
+
+                    body:
+                        formData,
                 }
             );
 
-        if (!response.ok) {
+        if (
+            !response.ok
+        ) {
             throw new Error(
                 `Transcription HTTP ${response.status}`
             );
@@ -760,8 +1447,12 @@ async function sendAudioToBMO(blob) {
         const data =
             await response.json();
 
-        if (!data.text) {
-            setFaceState("idle");
+        if (
+            !data.text
+        ) {
+            setFaceState(
+                "idle"
+            );
 
             showStatus(
                 "I didn't catch that",
@@ -771,26 +1462,30 @@ async function sendAudioToBMO(blob) {
             return;
         }
 
-        showTranscript(data.text);
+        showTranscript(
+            data.text
+        );
 
-        await sendMessage(data.text);
+        await sendMessage(
+            data.text
+        );
+
     } catch (error) {
         console.error(
             "Transcription error:",
             error
         );
 
-        setFaceState("error");
+        setFaceState(
+            "error"
+        );
 
         showStatus(
             "I couldn't hear that",
             2500
         );
 
-        setTimeout(
-            () => setFaceState("idle"),
-            1500
-        );
+        recoverToIdle();
     }
 }
 
@@ -799,8 +1494,12 @@ async function sendAudioToBMO(blob) {
  * Chat
  */
 
-async function sendMessage(text) {
-    setFaceState("thinking");
+async function sendMessage(
+    text
+) {
+    setFaceState(
+        "thinking"
+    );
 
     showStatus(
         "Thinking...",
@@ -812,26 +1511,33 @@ async function sendMessage(text) {
             await fetch(
                 "/api/chat",
                 {
-                    method: "POST",
+                    method:
+                        "POST",
 
                     headers: {
                         "Content-Type":
                             "application/json",
                     },
 
-                    body: JSON.stringify(
-                        {
-                            message: text,
-                            history:
-                                conversationHistory,
-                            play_on_hardware:
-                                false,
-                        }
-                    ),
+                    body:
+                        JSON.stringify(
+                            {
+                                message:
+                                    text,
+
+                                history:
+                                    conversationHistory,
+
+                                play_on_hardware:
+                                    false,
+                            }
+                        ),
                 }
             );
 
-        if (!response.ok) {
+        if (
+            !response.ok
+        ) {
             throw new Error(
                 `Chat HTTP ${response.status}`
             );
@@ -840,12 +1546,16 @@ async function sendMessage(text) {
         const data =
             await response.json();
 
-        if (data.history) {
+        if (
+            data.history
+        ) {
             conversationHistory =
                 data.history;
         }
 
-        if (data.audio_url) {
+        if (
+            data.audio_url
+        ) {
             await playBMOAudio(
                 data.audio_url
             );
@@ -853,61 +1563,91 @@ async function sendMessage(text) {
             return;
         }
 
-        setFaceState("idle");
+        setFaceState(
+            "idle"
+        );
 
         showStatus(
             "Ready",
             1200
         );
+
     } catch (error) {
         console.error(
             "Chat error:",
             error
         );
 
-        setFaceState("error");
+        setFaceState(
+            "error"
+        );
 
         showStatus(
             "BMO brain connection failed",
             2500
         );
 
-        setTimeout(
-            () => {
-                setFaceState("idle");
-            },
-            1500
-        );
+        recoverToIdle();
     }
 }
 
 
 /*
- * Audio playback and mouth sync
+ * Audio playback
  */
 
-async function playBMOAudio(audioUrl) {
-    if (currentAudio) {
-        currentAudio.pause();
-        currentAudio = null;
-    }
+async function playBMOAudio(
+    audioUrl
+) {
+    stopCurrentAudio();
+
+    const generation =
+        playbackGeneration;
+
+    const audio =
+        new Audio(
+            audioUrl
+        );
 
     currentAudio =
-        new Audio(audioUrl);
+        audio;
 
-    setFaceState("speaking");
+    setFaceState(
+        "speaking"
+    );
 
     showStatus(
         "Speaking...",
         1200
     );
 
-    setupVisualizer(currentAudio);
+    setupVisualizer(
+        audio,
+        generation
+    );
 
-    currentAudio.addEventListener(
+    audio.addEventListener(
         "ended",
         () => {
-            setFaceState("idle");
+            /*
+             * Ignore an old audio element whose playback was
+             * replaced or interrupted.
+             */
+            if (
+                generation !==
+                playbackGeneration
+            ) {
+                return;
+            }
+
+            disconnectVisualizer();
+
+            currentAudio =
+                null;
+
+            setFaceState(
+                "idle"
+            );
 
             showStatus(
                 "Hold to talk",
@@ -916,32 +1656,63 @@ async function playBMOAudio(audioUrl) {
         }
     );
 
-    currentAudio.addEventListener(
+    audio.addEventListener(
         "error",
         (error) => {
+            if (
+                generation !==
+                playbackGeneration
+            ) {
+                return;
+            }
+
             console.error(
                 "Audio playback error:",
                 error
             );
 
-            setFaceState("error");
+            disconnectVisualizer();
+
+            currentAudio =
+                null;
+
+            setFaceState(
+                "error"
+            );
 
             showStatus(
                 "Audio playback failed",
                 2200
             );
+
+            recoverToIdle();
         }
     );
 
     try {
-        await currentAudio.play();
+        await audio.play();
+
     } catch (error) {
+        if (
+            generation !==
+            playbackGeneration
+        ) {
+            return;
+        }
+
         console.error(
             "Audio autoplay error:",
             error
         );
 
-        setFaceState("idle");
+        disconnectVisualizer();
+
+        currentAudio =
+            null;
+
+        setFaceState(
+            "idle"
+        );
 
         showStatus(
             "Tap once, then try again",
@@ -951,8 +1722,19 @@ async function playBMOAudio(audioUrl) {
 }
 
 
-function setupVisualizer(audioElement) {
-    if (!audioContext) {
+/*
+ * Lip sync
+ */
+
+function setupVisualizer(
+    audioElement,
+    generation
+) {
+    disconnectVisualizer();
+
+    if (
+        !audioContext
+    ) {
         audioContext =
             new (
                 window.AudioContext ||
@@ -960,7 +1742,7 @@ function setupVisualizer(audioElement) {
             )();
     }
 
-    const source =
+    currentAudioSource =
         audioContext.createMediaElementSource(
             audioElement
         );
@@ -968,9 +1750,13 @@ function setupVisualizer(audioElement) {
     analyser =
         audioContext.createAnalyser();
 
-    analyser.fftSize = 256;
+    analyser.fftSize =
+        256;
 
-    source.connect(analyser);
+    currentAudioSource.connect(
+        analyser
+    );
+
     analyser.connect(
         audioContext.destination
     );
@@ -982,11 +1768,18 @@ function setupVisualizer(audioElement) {
 
     function syncMouth() {
         if (
-            bmoRenderer.state !== "speaking" ||
+            generation !==
+                playbackGeneration ||
+            bmoRenderer.state !==
+                "speaking" ||
             audioElement.paused ||
-            audioElement.ended
+            audioElement.ended ||
+            !analyser ||
+            !dataArray
         ) {
-            bmoRenderer.mouthOpen = 0;
+            bmoRenderer.mouthOpen =
+                0;
+
             return;
         }
 
@@ -994,20 +1787,27 @@ function setupVisualizer(audioElement) {
             dataArray
         );
 
-        let sum = 0;
+        let sum =
+            0;
 
         for (
             let index = 0;
-            index < dataArray.length;
+            index <
+            dataArray.length;
             index++
         ) {
-            sum += Math.abs(
-                dataArray[index] - 128
-            );
+            sum +=
+                Math.abs(
+                    dataArray[index] -
+                    128
+                );
         }
 
         bmoRenderer.mouthOpen =
-            (sum / dataArray.length) * 4;
+            (
+                sum /
+                dataArray.length
+            ) * 4;
 
         requestAnimationFrame(
             syncMouth
@@ -1020,31 +1820,16 @@ function setupVisualizer(audioElement) {
 
 /*
  * Touch / mouse controls
- *
- * Press and hold anywhere on BMO's screen.
  */
 
 screen.addEventListener(
     "pointerdown",
-    async (event) => {
+    (event) => {
         event.preventDefault();
 
-        if (
-            bmoRenderer.state === "speaking"
-        ) {
-            return;
-        }
-
-        if (screen.setPointerCapture) {
-            try {
-                screen.setPointerCapture(
-                    event.pointerId
-                );
-            } catch (_) {
-            }
-        }
-
-        await startRecording();
+        beginHold(
+            event
+        );
     }
 );
 
@@ -1054,15 +1839,19 @@ screen.addEventListener(
     (event) => {
         event.preventDefault();
 
-        stopRecording();
+        endHold(
+            event
+        );
     }
 );
 
 
 screen.addEventListener(
     "pointercancel",
-    () => {
-        stopRecording();
+    (event) => {
+        endHold(
+            event
+        );
     }
 );
 
@@ -1070,7 +1859,14 @@ screen.addEventListener(
 window.addEventListener(
     "blur",
     () => {
-        if (isRecording) {
+        cancelPendingHold();
+
+        activePointerId =
+            null;
+
+        if (
+            isRecording
+        ) {
             stopRecording();
         }
     }
@@ -1100,16 +1896,16 @@ document.addEventListener(
         requestWakeLock();
     },
     {
-        once: true,
+        once:
+            true,
     }
 );
 
 
 /*
- * Browser/PWA support.
+ * Browser / PWA support
  *
- * The native Android shell does not need a service worker, so avoid
- * registering one there.
+ * The native Android shell does not need a service worker.
  */
 
 if (
@@ -1123,13 +1919,15 @@ if (
                 await navigator.serviceWorker.register(
                     "/static/sw.js",
                     {
-                        scope: "/static/",
+                        scope:
+                            "/static/",
                     }
                 );
 
                 console.log(
                     "BMO service worker ready"
                 );
+
             } catch (error) {
                 console.warn(
                     "BMO service worker failed:",
@@ -1147,47 +1945,82 @@ if (
 
 window.onNativeRecordingStarted =
     function () {
-        isRecording = true;
+        recordingStartPending =
+            false;
 
-        setFaceState("listening");
+        isRecording =
+            true;
+
+        setFaceState(
+            "listening"
+        );
 
         showStatus(
             "Listening...",
             0
         );
 
-        if ("vibrate" in navigator) {
-            navigator.vibrate(30);
+        if (
+            "vibrate" in
+            navigator
+        ) {
+            navigator.vibrate(
+                30
+            );
         }
     };
 
 
 window.onNativeRecordingStopped =
     function () {
-        isRecording = false;
+        recordingStartPending =
+            false;
 
-        setFaceState("thinking");
+        isRecording =
+            false;
+
+        setFaceState(
+            "thinking"
+        );
 
         showStatus(
             "Thinking...",
             0
         );
 
-        if ("vibrate" in navigator) {
-            navigator.vibrate(20);
+        if (
+            "vibrate" in
+            navigator
+        ) {
+            navigator.vibrate(
+                20
+            );
         }
     };
 
 
 window.onNativeTranscript =
-    async function (text) {
-        isRecording = false;
+    async function (
+        text
+    ) {
+        recordingStartPending =
+            false;
+
+        isRecording =
+            false;
 
         const cleanedText =
-            String(text || "").trim();
+            String(
+                text ||
+                ""
+            ).trim();
 
-        if (!cleanedText) {
-            setFaceState("idle");
+        if (
+            !cleanedText
+        ) {
+            setFaceState(
+                "idle"
+            );
 
             showStatus(
                 "I didn't catch that",
@@ -1197,17 +2030,27 @@ window.onNativeTranscript =
             return;
         }
 
-        showTranscript(cleanedText);
+        showTranscript(
+            cleanedText
+        );
 
-        await sendMessage(cleanedText);
+        await sendMessage(
+            cleanedText
+        );
     };
 
 
 window.onNativeNoSpeech =
     function () {
-        isRecording = false;
+        recordingStartPending =
+            false;
 
-        setFaceState("idle");
+        isRecording =
+            false;
+
+        setFaceState(
+            "idle"
+        );
 
         showStatus(
             "I didn't catch that",
@@ -1217,25 +2060,31 @@ window.onNativeNoSpeech =
 
 
 window.onNativeMicError =
-    function (message) {
-        isRecording = false;
+    function (
+        message
+    ) {
+        recordingStartPending =
+            false;
+
+        isRecording =
+            false;
 
         console.error(
             "Native microphone error:",
             message
         );
 
-        setFaceState("error");
+        setFaceState(
+            "error"
+        );
 
         showStatus(
-            message || "Microphone error",
+            message ||
+                "Microphone error",
             2500
         );
 
-        setTimeout(
-            () => {
-                setFaceState("idle");
-            },
+        recoverToIdle(
             1800
         );
     };
@@ -1245,7 +2094,9 @@ window.onNativeMicError =
  * Initial state
  */
 
-setFaceState("idle");
+setFaceState(
+    "idle"
+);
 
 showStatus(
     "Hold anywhere to talk",
