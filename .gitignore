@@ -42,3 +42,23 @@ test_audio.wav
 .DS_Store
 Thumbs.db
 ehthumbs.db
+
+# --- Local source/runtime dependencies ---
+whisper.cpp/
+
+# --- Backups / scratch files ---
+*.bak
+*.backup
+*.before-*
+*-backup-*
+*backup*.js
+
+# --- Test/cache artifacts ---
+.pytest_cache/
+
+# --- Android Studio ---
+.gradle/
+.idea/
+local.properties
+build/
+*/build/

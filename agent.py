@@ -243,21 +243,29 @@ class BotGUI:
         
         # --- WAKE WORD INITIALIZATION ---
         print("[INIT] Loading Wake Word...", flush=True)
+
         self.oww_model = None
+
         if os.path.exists(WAKE_WORD_MODEL):
             try:
-                self.oww_model = Model(wakeword_model_paths=[WAKE_WORD_MODEL])
+                self.oww_model = Model(
+                    wakeword_models=[WAKE_WORD_MODEL],
+                    inference_framework="onnx",
+                )
+
                 print("[INIT] Wake Word Loaded.", flush=True)
-            except TypeError:
-                try:
-                    self.oww_model = Model(wakeword_models=[WAKE_WORD_MODEL])
-                    print("[INIT] Wake Word Loaded (New API).", flush=True)
-                except Exception as e:
-                    print(f"[CRITICAL] Failed to load model: {e}")
-            except Exception as e:
-                print(f"[CRITICAL] Failed to load model: {e}")
+
+            except Exception as exc:
+                print(
+                    f"[CRITICAL] Failed to load wake word model: {exc}",
+                    flush=True,
+                )
+
         else:
-            print(f"[CRITICAL] Model not found: {WAKE_WORD_MODEL}")
+            print(
+                f"[CRITICAL] Model not found: {WAKE_WORD_MODEL}",
+                flush=True,
+            )
 
         # GUI Setup
         self.background_label = tk.Label(master)
@@ -616,80 +624,113 @@ class BotGUI:
         return "WAKE"
 
     def _listen_loop(self, stream_args, input_chunk_size, target_chunk_size, use_resampling):
-        # Force software backend (no mmap) via environment variable if possible, 
-        # but here we can try to hint loop settings.
-        # However, the most effective fix for ALSA mmap issues is often just asking for 'blocksize=0' 
-        # and letting portaudio manage the buffering, OR very small chunks.
-        
-        # Let's try to be less aggressive with reads.
-        
-         with sd.InputStream(**stream_args) as stream:
-                print(f"[AUDIO] Listening with rate {stream_args['samplerate']} and block {stream_args['blocksize']}", flush=True)
-                
-                # Pre-allocate buffer for speed
-                # If blocksize is 0, we read what is available.
-                
-                while True:
-                    if self.ptt_event.is_set():
-                        self.ptt_event.clear()
-                        raise StopIteration("PTT")
+        """
+        Continuously listen for the OpenWakeWord trigger.
 
-                    rlist, _, _ = select.select([sys.stdin], [], [], 0.001)
-                    if rlist: 
-                        sys.stdin.readline()
-                        raise StopIteration("CLI")
+        The MacBook microphone commonly runs at 44.1 kHz, while
+        OpenWakeWord expects 16 kHz audio. Audio is therefore properly
+        resampled before being passed to the wake-word model.
+        """
+        from scipy.signal import resample_poly
 
-                    # If fallback mode (blocksize 0), read fixed amount
-                    read_size = input_chunk_size
-                    if stream_args.get('blocksize') == 0:
-                        read_size = 1024 # Safe small read
-                    
-                    try:
-                        data, overflow = stream.read(read_size)
-                        if overflow:
-                            print("!", end="", flush=True) 
-                            # If we overflow excessively, raise error to trigger fallback to SAFE MODE (PulseAudio/Software)
-                            # We can use a simple counter attached to the function or object, but here raising immediately 
-                            # after a few in a row is safest.
-                            raise RuntimeError("Audio Buffer Overflow - Triggering Safe Mode")
-                    except Exception as e:
-                        # Convert uncatchable PaErrorCode wrapper to standard Exception if needed
-                        # But honestly, `raise e` should work... unless it's a SystemExit?
-                        # Let's wrap it in a new exception to be sure it bubbles up
-                        raise RuntimeError(f"Audio read failed: {e}")
+        OWW_SAMPLE_RATE = 16000
 
-                    audio_data = np.frombuffer(data, dtype=np.int16)
+        with sd.InputStream(**stream_args) as stream:
+            print(
+                f"[AUDIO] Listening with rate {stream_args['samplerate']} "
+                f"and block {stream_args['blocksize']}",
+                flush=True,
+            )
 
-                    # Ensure flattening for openwakeword compatibility
-                    if audio_data.ndim > 1:
-                        audio_data = audio_data.flatten()
+            while True:
+                # GUI push-to-talk
+                if self.ptt_event.is_set():
+                    self.ptt_event.clear()
+                    raise StopIteration("PTT")
 
-                    if use_resampling:
-                        # FAST RESAMPLING: Nearest-neighbor slicing instead of scipy.signal.resample
-                        # This avoids the CPU bottleneck that causes overflow (!!!!!!!) on Raspberry Pi
-                        step = len(audio_data) / target_chunk_size
-                        indices = np.arange(0, len(audio_data), step)[:target_chunk_size].astype(int)
-                        audio_data = audio_data[indices]
-                    
-                    # Convert to float for model prediction without needing heavy resampling logic
-                    # The wake word model needs 16000, which we just faked above.
-                    
-                    # Debug volume occasionally
-                    current_max = np.max(np.abs(audio_data))
-                    
-                    # Only predict if volume is significant to save CPU
-                    if current_max > 200: 
-                        prediction = self.oww_model.predict(audio_data)
-                        for mdl in self.oww_model.prediction_buffer.keys():
-                            score = list(self.oww_model.prediction_buffer[mdl])[-1]
-                            if score > 0.1: # Show potential triggers
-                                print(f"\r[Oww] Score: {score:.3f} | Vol: {current_max}   ", end="", flush=True)
+                # Terminal Enter bypass
+                rlist, _, _ = select.select([sys.stdin], [], [], 0.001)
+                if rlist:
+                    sys.stdin.readline()
+                    raise StopIteration("CLI")
 
-                            if score > WAKE_WORD_THRESHOLD:
-                                print(f"\n[WAKE] Triggered on '{mdl}' with score: {score:.2f}", flush=True)
-                                self.oww_model.reset() 
-                                return # Success
+                read_size = input_chunk_size
 
+                if stream_args.get("blocksize") == 0:
+                    read_size = 1024
+
+                try:
+                    data, overflow = stream.read(read_size)
+
+                    if overflow:
+                        raise RuntimeError(
+                            "Audio buffer overflow - triggering fallback mode"
+                        )
+
+                except Exception as exc:
+                    raise RuntimeError(
+                        f"Audio read failed: {exc}"
+                    ) from exc
+
+                audio_data = np.asarray(data, dtype=np.int16).flatten()
+
+                if len(audio_data) == 0:
+                    continue
+
+                # Convert the microphone's native sample rate to the
+                # 16 kHz audio expected by OpenWakeWord.
+                if use_resampling:
+                    input_rate = int(stream_args["samplerate"])
+
+                    gcd = np.gcd(input_rate, OWW_SAMPLE_RATE)
+                    up = OWW_SAMPLE_RATE // gcd
+                    down = input_rate // gcd
+
+                    audio_data = resample_poly(
+                        audio_data.astype(np.float32),
+                        up,
+                        down,
+                    )
+
+                    audio_data = np.clip(
+                        np.rint(audio_data),
+                        -32768,
+                        32767,
+                    ).astype(np.int16)
+
+                # OpenWakeWord expects a fixed-size chunk.
+                if len(audio_data) > target_chunk_size:
+                    audio_data = audio_data[:target_chunk_size]
+
+                elif len(audio_data) < target_chunk_size:
+                    audio_data = np.pad(
+                        audio_data,
+                        (0, target_chunk_size - len(audio_data)),
+                        mode="constant",
+                    )
+
+                # Avoid running inference on effectively silent chunks.
+                current_max = int(
+                    np.max(np.abs(audio_data.astype(np.int32)))
+                )
+
+                if current_max <= 100:
+                    continue
+
+                prediction = self.oww_model.predict(audio_data)
+
+                for model_name, raw_score in prediction.items():
+                    score = float(raw_score)
+
+                    if score >= WAKE_WORD_THRESHOLD:
+                        print(
+                            f"[WAKE] Triggered on '{model_name}' "
+                            f"with score {score:.2f}",
+                            flush=True,
+                        )
+
+                        self.oww_model.reset()
+                        return
 
     def record_voice_adaptive(self, filename="input.wav"):
         print("Recording (Adaptive)...", flush=True)

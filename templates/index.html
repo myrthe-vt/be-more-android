@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>BMO is Online!</title>
+    <link rel="icon" type="image/png" href="/favicon.png">
+
+    <!-- Include CSS -->
+    <link rel="stylesheet" href="/static/style.css">
+
+    <!-- Include Marked.js for Markdown parsing -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+</head>
+
+<body>
+    <div id="pronunciation-modal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">Fix Pronunciation</div>
+            <input type="text" id="pronounce-word" class="modal-input" placeholder="Word (e.g. BMO)">
+            <input type="text" id="pronounce-phonetic" class="modal-input" placeholder="Phonetic (e.g. Beemo)">
+            <div class="modal-buttons">
+                <button class="btn btn-secondary" onclick="closePronunciationModal()">Cancel</button>
+                <button class="btn btn-primary" onclick="savePronunciation()">Save</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="header">
+        <div class="header-title">🎮 BMO IS ONLINE 🎮</div>
+        <div class="header-controls">
+            <div class="status-indicator">
+                <div id="status-dot" class="status-dot"></div>
+                <span id="status-text" class="status-text">LLM: Checking...</span>
+            </div>
+            <label class="header-toggle">
+                <input type="checkbox" id="hands-free-toggle"> <span>Hands-Free</span> 🗣️
+            </label>
+            <label class="header-toggle">
+                <input type="checkbox" id="audio-toggle"> <span>Pi Audio</span> 🔊
+            </label>
+            <button class="btn btn-secondary" onclick="openPronunciationModal()" style="padding: 5px 8px; width: auto; flex: none;">🗣️ Fix</button>
+        </div>
+    </div>
+
+    <div id="main-container">
+        <div id="face-container">
+            <div class="bmo-body">
+                <div class="bmo-screen-container">
+                    <canvas id="bmo-face-canvas" width="800" height="480"></canvas>
+                    <img id="bmo-display-image" src="" style="display:none; position:absolute; top:0; left:0; width:100%; height:100%; object-fit:contain; z-index:10; background-color:#c4d4b4; border-radius:10px;">
+                    <div id="bmo-transcript"></div>
+                </div>
+                <div class="bmo-disk-drive"></div>
+                <div class="bmo-controls-area">
+                    <div class="bmo-small-btn"></div>
+                    <div class="bmo-dpad">
+                        <div class="dpad-part dpad-up"></div>
+                        <div class="dpad-part dpad-left"></div>
+                        <div class="dpad-center"></div>
+                        <div class="dpad-part dpad-right"></div>
+                        <div class="dpad-part dpad-down"></div>
+                    </div>
+                    <div class="bmo-action-btns">
+                        <div class="btn-triangle">
+                            <svg width="30" height="30"><polygon points="15,2 28,28 2,28" fill="#5dade2" stroke="#111" stroke-width="2" /></svg>
+                        </div>
+                        <div class="btn-green"></div>
+                        <div class="btn-pink"></div>
+                    </div>
+                    <div class="bmo-pills">
+                        <div class="btn-pill"></div>
+                        <div class="btn-pill"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div id="chat-container">
+            <div id="chat-history">
+                <div class="system-message">Welcome! I am BMO! You can talk to me or use the microphone.</div>
+            </div>
+            <div id="input-container">
+                <button id="mic-btn" title="Hold to talk">🎤</button>
+                <input type="text" id="user-input" placeholder="Type to BMO..." autocomplete="off">
+                <button id="send-btn">Send</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Include App Logic -->
+    <script src="/static/app.js"></script>
+</body>
+
+</html>

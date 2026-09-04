@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+
+    <meta
+        name="viewport"
+        content="width=device-width,
+                 initial-scale=1.0,
+                 maximum-scale=1.0,
+                 user-scalable=no,
+                 viewport-fit=cover"
+    >
+
+    <meta name="theme-color" content="#bdffcb">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="BMO">
+
+    <title>BMO</title>
+
+    <link
+        rel="manifest"
+        href="/static/manifest.webmanifest"
+    >
+
+    <link
+        rel="icon"
+        type="image/png"
+        sizes="192x192"
+        href="/static/icons/bmo-192.png"
+    >
+
+    <link
+        rel="apple-touch-icon"
+        href="/static/icons/bmo-192.png"
+    >
+
+    <link
+        rel="stylesheet"
+        href="/static/face.css"
+    >
+</head>
+
+<body>
+    <main id="bmo-screen">
+        <canvas
+            id="bmo-face-canvas"
+            width="800"
+            height="480"
+            aria-label="BMO face"
+        ></canvas>
+
+        <div id="status-message">
+            Hold anywhere to talk
+        </div>
+
+        <div id="transcript"></div>
+    </main>
+
+    <script src="/static/face.js"></script>
+</body>
+</html>

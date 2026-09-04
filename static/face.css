@@ -1,0 +1,143 @@
+:root {
+    --bmo-screen: #bdffcb;
+    --bmo-dark: #000000;
+}
+
+* {
+    box-sizing: border-box;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+}
+
+html,
+body {
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    background: var(--bmo-screen);
+}
+
+body {
+    position: fixed;
+    inset: 0;
+    overscroll-behavior: none;
+}
+
+#bmo-screen {
+    position: fixed;
+    inset: 0;
+
+    width: 100vw;
+    height: 100dvh;
+
+    display: flex;
+    align-items: center;
+    justify-content: center;
+
+    background: var(--bmo-screen);
+
+    cursor: pointer;
+    overflow: hidden;
+}
+
+#bmo-face-canvas {
+    position: absolute;
+    inset: 0;
+
+    width: 100%;
+    height: 100%;
+
+    object-fit: contain;
+}
+
+#status-message {
+    position: absolute;
+
+    left: 50%;
+    bottom: max(20px, env(safe-area-inset-bottom));
+
+    transform: translateX(-50%);
+
+    padding: 8px 14px;
+
+    border-radius: 20px;
+
+    background: rgba(0, 0, 0, 0.08);
+
+    color: rgba(0, 0, 0, 0.65);
+
+    font-family:
+        -apple-system,
+        BlinkMacSystemFont,
+        "Segoe UI",
+        sans-serif;
+
+    font-size: 13px;
+    font-weight: 600;
+
+    white-space: nowrap;
+
+    opacity: 1;
+
+    transition:
+        opacity 0.4s ease,
+        transform 0.4s ease;
+
+    pointer-events: none;
+}
+
+#status-message.hidden {
+    opacity: 0;
+    transform: translateX(-50%) translateY(8px);
+}
+
+#transcript {
+    position: absolute;
+
+    left: 8vw;
+    right: 8vw;
+    top: max(20px, env(safe-area-inset-top));
+
+    text-align: center;
+
+    color: rgba(0, 0, 0, 0.7);
+
+    font-family:
+        -apple-system,
+        BlinkMacSystemFont,
+        "Segoe UI",
+        sans-serif;
+
+    font-size: clamp(14px, 3vw, 20px);
+    font-weight: 600;
+
+    line-height: 1.35;
+
+    opacity: 0;
+
+    transition: opacity 0.3s ease;
+
+    pointer-events: none;
+}
+
+#transcript.visible {
+    opacity: 1;
+}
+
+/*
+ * Landscape is the most BMO-like orientation, but portrait still works.
+ * The canvas preserves the original 800x480 face proportions.
+ */
+@media (orientation: portrait) {
+    #bmo-face-canvas {
+        width: 100vw;
+        height: auto;
+
+        top: 50%;
+        transform: translateY(-50%);
+    }
+}
