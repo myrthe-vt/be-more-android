@@ -271,6 +271,39 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+    private val powerReceiver =
+        object : BroadcastReceiver() {
+
+            override fun onReceive(
+                context: Context?,
+                intent: Intent?
+            ) {
+                val action =
+                    intent?.action
+                        ?: return
+
+                val charging =
+                    when (action) {
+                        Intent.ACTION_POWER_CONNECTED ->
+                            true
+
+                        Intent.ACTION_POWER_DISCONNECTED ->
+                            false
+
+                        else ->
+                            return
+                    }
+
+                Log.i(
+                    WAKE_LOG,
+                    "BMO power state changed: charging=$charging"
+                )
+
+                notifyJavascriptPowerStateChanged(
+                    charging
+                )
+            }
+        }
 
     override fun onCreate(
         savedInstanceState: Bundle?
@@ -2788,6 +2821,61 @@ class MainActivity : AppCompatActivity() {
         )
     }
 
+    private fun notifyJavascriptPowerStateChanged(
+        charging: Boolean
+    ) {
+        val batteryState =
+            try {
+                JSONObject(
+                    getBatteryStateJson()
+                )
+            } catch (
+                _: Exception
+            ) {
+                JSONObject()
+            }
+
+        val batteryPercent =
+            if (
+                batteryState.has(
+                    "battery_percent"
+                ) &&
+                !batteryState.isNull(
+                    "battery_percent"
+                )
+            ) {
+                batteryState.optInt(
+                    "battery_percent",
+                    -1
+                )
+
+            } else {
+                -1
+            }
+
+        Log.i(
+            WAKE_LOG,
+            "Sending power event to WebView: charging=$charging battery=$batteryPercent"
+        )
+
+        evaluateJavascript(
+            """
+        if (
+            window.onNativePowerStateChanged
+        ) {
+            window.onNativePowerStateChanged(
+                {
+                    charging:
+                        $charging,
+
+                    battery_percent:
+                        $batteryPercent
+                }
+            );
+        }
+        """.trimIndent()
+        )
+    }
 
     private fun evaluateJavascript(
         javascript: String
@@ -3018,6 +3106,18 @@ class MainActivity : AppCompatActivity() {
                 ConnectivityManager.CONNECTIVITY_ACTION
             )
         )
+        registerReceiver(
+            powerReceiver,
+            IntentFilter().apply {
+                addAction(
+                    Intent.ACTION_POWER_CONNECTED
+                )
+
+                addAction(
+                    Intent.ACTION_POWER_DISCONNECTED
+                )
+            }
+        )
     }
 
 
@@ -3025,6 +3125,16 @@ class MainActivity : AppCompatActivity() {
         try {
             unregisterReceiver(
                 connectivityReceiver
+            )
+
+        } catch (
+            _: Exception
+        ) {
+        }
+
+        try {
+            unregisterReceiver(
+                powerReceiver
             )
 
         } catch (
