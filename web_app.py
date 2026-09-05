@@ -20,7 +20,7 @@ import re
 
 # Import our new unified core modules
 from core.llm import Brain, strip_prompt_leakage, extract_json_object, sanitize_messages
-from core.tts import play_audio_on_hardware, generate_audio_file, add_pronunciation, load_pronunciations, clean_text_for_speech
+from core.tts import play_audio_on_hardware, generate_audio_file, add_pronunciation, load_pronunciations, clean_text_for_speech, remove_pronunciation
 from core.stt import transcribe_audio
 from core.config import LLM_URL, FAST_LLM_MODEL, WAKE_WORD_MODEL, WAKE_WORD_THRESHOLD
 from core.timers import parse_timer_request, describe_duration
@@ -350,6 +350,26 @@ def _cleanup_old_audio():
                 os.remove(fpath)
     except Exception as e:
         logger.warning(f"Audio cleanup error: {e}")
+
+
+@app.delete("/api/pronunciation/{word}")
+def delete_pronunciation_rule(
+    word: str
+):
+    """Delete one pronunciation override."""
+
+    removed = remove_pronunciation(
+        word
+    )
+
+    return {
+        "status":
+            "success"
+            if removed
+            else "not_found",
+        "word": word.lower(),
+    }
+
 
 @app.on_event("startup")
 async def startup_cleanup():

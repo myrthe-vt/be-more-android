@@ -41,6 +41,19 @@ def add_pronunciation(word: str, phonetic: str):
     pronunciations[word.lower()] = phonetic
     save_pronunciations(pronunciations)
 
+def remove_pronunciation(word: str) -> bool:
+    """Removes a pronunciation rule and saves the dictionary."""
+    pronunciations = load_pronunciations()
+    key = word.strip().lower()
+
+    if not key or key not in pronunciations:
+        return False
+
+    del pronunciations[key]
+    save_pronunciations(pronunciations)
+    return True
+
+
 def replace_years_with_words(text: str) -> str:
     """Converts 4-digit years into their spoken equivalents (e.g., 1980 -> nineteen eighty)."""
     def number_to_words(n):

@@ -8445,3 +8445,1395 @@ console.log(
 );
 
 /* === END BMO CRITTER OVERLAY SYSTEM === */
+
+
+/* === BMO DEBUG VOLUME CONTROL === */
+
+/*
+ * Native Android media-volume control.
+ *
+ * This controls AudioManager.STREAM_MUSIC on the LG itself, rather than
+ * merely adjusting the volume property of individual HTML Audio objects.
+ */
+
+function readBMONativeVolume() {
+    const bridge =
+        getNativeBridge();
+
+    if (!bridge) {
+        return null;
+    }
+
+    try {
+        /*
+         * Android 8 JavascriptInterface objects should be called directly.
+         * Do not rely on typeof bridge.getMediaVolume === "function".
+         */
+        const value =
+            Number(
+                bridge.getMediaVolume()
+            );
+
+        if (
+            Number.isFinite(value)
+        ) {
+            return Math.max(
+                0,
+                Math.min(
+                    100,
+                    Math.round(value)
+                )
+            );
+        }
+
+    } catch (error) {
+        console.warn(
+            "Could not read Android media volume:",
+            error
+        );
+    }
+
+    return null;
+}
+
+
+function setBMONativeVolume(
+    percent
+) {
+    const bridge =
+        getNativeBridge();
+
+    if (!bridge) {
+        return false;
+    }
+
+    const safePercent =
+        Math.max(
+            0,
+            Math.min(
+                100,
+                Math.round(
+                    Number(percent) || 0
+                )
+            )
+        );
+
+    try {
+        bridge.setMediaVolume(
+            safePercent
+        );
+
+        return true;
+
+    } catch (error) {
+        console.warn(
+            "Could not set Android media volume:",
+            error
+        );
+
+        return false;
+    }
+}
+
+
+function installBMODebugVolumeControl() {
+    if (
+        document.getElementById(
+            "bmo-debug-volume-control"
+        )
+    ) {
+        return true;
+    }
+
+    /*
+     * The expression button container is already part of the debug panel.
+     * Insert the volume section immediately before it.
+     */
+    const faceButtons =
+        document.getElementById(
+            "bmo-debug-face-buttons"
+        );
+
+    if (!faceButtons) {
+        return false;
+    }
+
+    const section =
+        document.createElement(
+            "div"
+        );
+
+    section.id =
+        "bmo-debug-volume-control";
+
+    Object.assign(
+        section.style,
+        {
+            marginTop: "18px",
+            marginBottom: "18px",
+            paddingTop: "14px",
+            paddingBottom: "14px",
+            borderTop:
+                "1px solid rgba(0,0,0,0.18)",
+            borderBottom:
+                "1px solid rgba(0,0,0,0.18)",
+        }
+    );
+
+    const heading =
+        document.createElement(
+            "div"
+        );
+
+    heading.textContent =
+        "BMO volume";
+
+    Object.assign(
+        heading.style,
+        {
+            fontWeight: "700",
+            marginBottom: "10px",
+        }
+    );
+
+    const row =
+        document.createElement(
+            "div"
+        );
+
+    Object.assign(
+        row.style,
+        {
+            display: "flex",
+            alignItems: "center",
+            gap: "12px",
+            width: "100%",
+        }
+    );
+
+    const low =
+        document.createElement(
+            "span"
+        );
+
+    low.textContent =
+        "🔈";
+
+    const high =
+        document.createElement(
+            "span"
+        );
+
+    high.textContent =
+        "🔊";
+
+    const slider =
+        document.createElement(
+            "input"
+        );
+
+    slider.type =
+        "range";
+
+    slider.min =
+        "0";
+
+    slider.max =
+        "100";
+
+    slider.step =
+        "1";
+
+    slider.id =
+        "bmo-debug-volume-slider";
+
+    Object.assign(
+        slider.style,
+        {
+            flex: "1",
+            width: "100%",
+            minWidth: "0",
+            height: "34px",
+            touchAction: "none",
+        }
+    );
+
+    const value =
+        document.createElement(
+            "span"
+        );
+
+    value.id =
+        "bmo-debug-volume-value";
+
+    value.textContent =
+        "--%";
+
+    Object.assign(
+        value.style,
+        {
+            minWidth: "48px",
+            textAlign: "right",
+            fontVariantNumeric:
+                "tabular-nums",
+        }
+    );
+
+    const current =
+        readBMONativeVolume();
+
+    if (current !== null) {
+        slider.value =
+            String(current);
+
+        value.textContent =
+            `${current}%`;
+
+    } else {
+        slider.value =
+            "50";
+
+        slider.disabled =
+            true;
+
+        value.textContent =
+            "N/A";
+    }
+
+    /*
+     * Update continuously while dragging.
+     *
+     * AudioManager has relatively few discrete volume steps, so Android
+     * will naturally snap our 0–100 UI percentage to the nearest real
+     * hardware level.
+     */
+    slider.addEventListener(
+        "input",
+        (event) => {
+            event.stopPropagation();
+
+            const newValue =
+                Number(
+                    slider.value
+                );
+
+            value.textContent =
+                `${Math.round(newValue)}%`;
+
+            setBMONativeVolume(
+                newValue
+            );
+        }
+    );
+
+    /*
+     * Prevent the debug slider drag from falling through into BMO's
+     * hold-to-talk gesture handling.
+     */
+    for (
+        const eventName
+        of [
+            "pointerdown",
+            "pointermove",
+            "pointerup",
+            "touchstart",
+            "touchmove",
+            "touchend",
+            "mousedown",
+            "mousemove",
+            "mouseup",
+        ]
+    ) {
+        slider.addEventListener(
+            eventName,
+            (event) => {
+                event.stopPropagation();
+            },
+            {
+                passive: false,
+            }
+        );
+    }
+
+    row.appendChild(
+        low
+    );
+
+    row.appendChild(
+        slider
+    );
+
+    row.appendChild(
+        high
+    );
+
+    row.appendChild(
+        value
+    );
+
+    section.appendChild(
+        heading
+    );
+
+    section.appendChild(
+        row
+    );
+
+    faceButtons.parentNode.insertBefore(
+        section,
+        faceButtons
+    );
+
+    return true;
+}
+
+
+/*
+ * The developer screen is created dynamically, so install immediately
+ * when possible and otherwise wait for it to appear.
+ */
+if (
+    !installBMODebugVolumeControl()
+) {
+    const bmoVolumeObserver =
+        new MutationObserver(
+            () => {
+                if (
+                    installBMODebugVolumeControl()
+                ) {
+                    bmoVolumeObserver.disconnect();
+                }
+            }
+        );
+
+    bmoVolumeObserver.observe(
+        document.body,
+        {
+            childList: true,
+            subtree: true,
+        }
+    );
+}
+
+
+/*
+ * Refresh the slider whenever the debug overlay is opened or touched.
+ * This matters if the physical Android volume buttons were used since
+ * the previous opening.
+ */
+function refreshBMODebugVolumeControl() {
+    const slider =
+        document.getElementById(
+            "bmo-debug-volume-slider"
+        );
+
+    const value =
+        document.getElementById(
+            "bmo-debug-volume-value"
+        );
+
+    if (
+        !slider ||
+        !value
+    ) {
+        return;
+    }
+
+    const current =
+        readBMONativeVolume();
+
+    if (current === null) {
+        slider.disabled =
+            true;
+
+        value.textContent =
+            "N/A";
+
+        return;
+    }
+
+    slider.disabled =
+        false;
+
+    slider.value =
+        String(current);
+
+    value.textContent =
+        `${current}%`;
+}
+
+
+document.addEventListener(
+    "pointerup",
+    () => {
+        if (
+            document.getElementById(
+                "bmo-debug-volume-slider"
+            )
+        ) {
+            setTimeout(
+                refreshBMODebugVolumeControl,
+                50
+            );
+        }
+    }
+);
+
+console.log(
+    "BMO debug native volume control ready"
+);
+
+/* === END BMO DEBUG VOLUME CONTROL === */
+
+
+/* === BMO PRONUNCIATION DEBUG EDITOR === */
+
+const bmoPronunciationEditor = {
+    rules: {},
+
+    async load() {
+        const list =
+            document.getElementById(
+                "bmo-pronunciation-list"
+            );
+
+        if (!list) {
+            return;
+        }
+
+        list.textContent =
+            "Loading...";
+
+        try {
+            const response =
+                await fetch(
+                    "/api/pronunciation",
+                    {
+                        cache: "no-store",
+                    }
+                );
+
+            if (!response.ok) {
+                throw new Error(
+                    `HTTP ${response.status}`
+                );
+            }
+
+            const data =
+                await response.json();
+
+            this.rules =
+                data &&
+                typeof data === "object"
+                    ? data
+                    : {};
+
+            this.render();
+
+        } catch (error) {
+            console.warn(
+                "Could not load pronunciations:",
+                error
+            );
+
+            list.textContent =
+                "Could not load pronunciation rules.";
+        }
+    },
+
+
+    render() {
+        const list =
+            document.getElementById(
+                "bmo-pronunciation-list"
+            );
+
+        if (!list) {
+            return;
+        }
+
+        list.innerHTML = "";
+
+        const entries =
+            Object.entries(
+                this.rules
+            ).sort(
+                ([a], [b]) =>
+                    a.localeCompare(b)
+            );
+
+        if (!entries.length) {
+            const empty =
+                document.createElement(
+                    "div"
+                );
+
+            empty.textContent =
+                "No pronunciation overrides yet.";
+
+            empty.style.opacity =
+                "0.65";
+
+            empty.style.padding =
+                "8px 0";
+
+            list.appendChild(
+                empty
+            );
+
+            return;
+        }
+
+        for (
+            const [
+                word,
+                phonetic,
+            ]
+            of entries
+        ) {
+            const row =
+                document.createElement(
+                    "div"
+                );
+
+            Object.assign(
+                row.style,
+                {
+                    display: "grid",
+                    gridTemplateColumns:
+                        "minmax(0,1fr) auto",
+                    gap: "8px",
+                    padding: "9px 0",
+                    borderBottom:
+                        "1px solid rgba(0,0,0,0.12)",
+                    alignItems: "center",
+                }
+            );
+
+            const text =
+                document.createElement(
+                    "div"
+                );
+
+            Object.assign(
+                text.style,
+                {
+                    minWidth: "0",
+                    overflowWrap:
+                        "anywhere",
+                    lineHeight: "1.3",
+                }
+            );
+
+            const original =
+                document.createElement(
+                    "strong"
+                );
+
+            original.textContent =
+                word;
+
+            const arrow =
+                document.createTextNode(
+                    "  →  "
+                );
+
+            const replacement =
+                document.createElement(
+                    "span"
+                );
+
+            replacement.textContent =
+                phonetic;
+
+            text.appendChild(
+                original
+            );
+
+            text.appendChild(
+                arrow
+            );
+
+            text.appendChild(
+                replacement
+            );
+
+
+            const buttons =
+                document.createElement(
+                    "div"
+                );
+
+            Object.assign(
+                buttons.style,
+                {
+                    display: "flex",
+                    gap: "5px",
+                    flexShrink: "0",
+                }
+            );
+
+
+            const edit =
+                this.makeButton(
+                    "Edit"
+                );
+
+            edit.addEventListener(
+                "click",
+                (event) => {
+                    event.stopPropagation();
+
+                    const wordInput =
+                        document.getElementById(
+                            "bmo-pronunciation-word"
+                        );
+
+                    const phoneticInput =
+                        document.getElementById(
+                            "bmo-pronunciation-phonetic"
+                        );
+
+                    if (
+                        !wordInput ||
+                        !phoneticInput
+                    ) {
+                        return;
+                    }
+
+                    wordInput.value =
+                        word;
+
+                    phoneticInput.value =
+                        phonetic;
+
+                    wordInput.dataset.editingWord =
+                        word;
+
+                    wordInput.focus();
+                }
+            );
+
+
+            const remove =
+                this.makeButton(
+                    "Delete"
+                );
+
+            let deleteArmed =
+                false;
+
+            let deleteTimer =
+                null;
+
+            remove.addEventListener(
+                "click",
+                async (event) => {
+                    event.stopPropagation();
+
+                    if (!deleteArmed) {
+                        deleteArmed =
+                            true;
+
+                        remove.textContent =
+                            "Delete?";
+
+                        remove.style.background =
+                            "rgba(255, 170, 170, 0.65)";
+
+                        this.setStatus(
+                            `Tap Delete? again to remove "${word}".`
+                        );
+
+                        deleteTimer =
+                            setTimeout(
+                                () => {
+                                    deleteArmed =
+                                        false;
+
+                                    remove.textContent =
+                                        "Delete";
+
+                                    remove.style.background =
+                                        "rgba(255,255,255,0.45)";
+                                },
+                                4000
+                            );
+
+                        return;
+                    }
+
+                    if (deleteTimer) {
+                        clearTimeout(
+                            deleteTimer
+                        );
+                    }
+
+                    remove.disabled =
+                        true;
+
+                    remove.textContent =
+                        "Deleting...";
+
+                    await this.remove(
+                        word
+                    );
+                }
+            );
+
+            buttons.appendChild(
+                edit
+            );
+
+            buttons.appendChild(
+                remove
+            );
+
+            row.appendChild(
+                text
+            );
+
+            row.appendChild(
+                buttons
+            );
+
+            list.appendChild(
+                row
+            );
+        }
+    },
+
+
+    makeButton(label) {
+        const button =
+            document.createElement(
+                "button"
+            );
+
+        button.type =
+            "button";
+
+        button.textContent =
+            label;
+
+        Object.assign(
+            button.style,
+            {
+                padding: "7px 9px",
+                borderRadius: "7px",
+                border:
+                    "1px solid rgba(0,0,0,0.35)",
+                background:
+                    "rgba(255,255,255,0.45)",
+                color: "#14351e",
+                fontWeight: "700",
+                fontSize: "12px",
+            }
+        );
+
+        return button;
+    },
+
+
+    setStatus(
+        message,
+        isError = false
+    ) {
+        const status =
+            document.getElementById(
+                "bmo-pronunciation-status"
+            );
+
+        if (!status) {
+            return;
+        }
+
+        status.textContent =
+            message;
+
+        status.style.color =
+            isError
+                ? "#8c1c1c"
+                : "#245b32";
+    },
+
+
+    async save() {
+        const wordInput =
+            document.getElementById(
+                "bmo-pronunciation-word"
+            );
+
+        const phoneticInput =
+            document.getElementById(
+                "bmo-pronunciation-phonetic"
+            );
+
+        if (
+            !wordInput ||
+            !phoneticInput
+        ) {
+            return;
+        }
+
+        const word =
+            wordInput.value.trim();
+
+        const phonetic =
+            phoneticInput.value.trim();
+
+        if (
+            !word ||
+            !phonetic
+        ) {
+            this.setStatus(
+                "Enter both a word and how BMO should say it.",
+                true
+            );
+
+            return;
+        }
+
+        this.setStatus(
+            "Saving..."
+        );
+
+        try {
+            /*
+             * If we're editing a rule and changed the actual
+             * spelling of the word, remove the old key first.
+             */
+            const previousWord =
+                wordInput.dataset.editingWord;
+
+            if (
+                previousWord &&
+                previousWord.toLowerCase() !==
+                    word.toLowerCase()
+            ) {
+                await fetch(
+                    `/api/pronunciation/${encodeURIComponent(previousWord)}`,
+                    {
+                        method: "DELETE",
+                    }
+                );
+            }
+
+            const response =
+                await fetch(
+                    "/api/pronunciation",
+                    {
+                        method: "POST",
+                        headers: {
+                            "Content-Type":
+                                "application/json",
+                        },
+                        body: JSON.stringify({
+                            word,
+                            phonetic,
+                        }),
+                    }
+                );
+
+            if (!response.ok) {
+                throw new Error(
+                    `HTTP ${response.status}`
+                );
+            }
+
+            const data =
+                await response.json();
+
+            if (
+                data.status ===
+                "error"
+            ) {
+                throw new Error(
+                    data.error ||
+                    "save failed"
+                );
+            }
+
+            wordInput.value =
+                "";
+
+            phoneticInput.value =
+                "";
+
+            delete wordInput.dataset
+                .editingWord;
+
+            this.setStatus(
+                `Saved "${word}".`
+            );
+
+            await this.load();
+
+        } catch (error) {
+            console.warn(
+                "Pronunciation save failed:",
+                error
+            );
+
+            this.setStatus(
+                "Could not save pronunciation.",
+                true
+            );
+        }
+    },
+
+
+    async remove(word) {
+        this.setStatus(
+            `Deleting "${word}"...`
+        );
+
+        try {
+            const response =
+                await fetch(
+                    `/api/pronunciation/${encodeURIComponent(word)}`,
+                    {
+                        method: "DELETE",
+                    }
+                );
+
+            if (!response.ok) {
+                throw new Error(
+                    `HTTP ${response.status}`
+                );
+            }
+
+            this.setStatus(
+                `Deleted "${word}".`
+            );
+
+            await this.load();
+
+        } catch (error) {
+            console.warn(
+                "Pronunciation delete failed:",
+                error
+            );
+
+            this.setStatus(
+                "Could not delete pronunciation.",
+                true
+            );
+        }
+    },
+};
+
+
+function stopBMOInputPropagation(
+    element
+) {
+    if (!element) {
+        return;
+    }
+
+    /*
+     * Keep typing and touching controls in the debug screen
+     * from triggering BMO's push-to-talk / secret-tap logic.
+     */
+    const events = [
+        "pointerdown",
+        "pointerup",
+        "pointermove",
+        "touchstart",
+        "touchmove",
+        "touchend",
+        "mousedown",
+        "mouseup",
+        "click",
+        "keydown",
+        "keyup",
+    ];
+
+    for (
+        const eventName
+        of events
+    ) {
+        element.addEventListener(
+            eventName,
+            (event) => {
+                event.stopPropagation();
+            },
+            {
+                passive: false,
+            }
+        );
+    }
+}
+
+
+function installBMOPronunciationEditor() {
+    if (
+        document.getElementById(
+            "bmo-pronunciation-editor"
+        )
+    ) {
+        return true;
+    }
+
+    const faceButtons =
+        document.getElementById(
+            "bmo-debug-face-buttons"
+        );
+
+    if (!faceButtons) {
+        return false;
+    }
+
+    const section =
+        document.createElement(
+            "div"
+        );
+
+    section.id =
+        "bmo-pronunciation-editor";
+
+    Object.assign(
+        section.style,
+        {
+            marginTop: "18px",
+            marginBottom: "18px",
+            paddingTop: "15px",
+            paddingBottom: "15px",
+            borderTop:
+                "1px solid rgba(0,0,0,0.20)",
+            borderBottom:
+                "1px solid rgba(0,0,0,0.20)",
+        }
+    );
+
+
+    const heading =
+        document.createElement(
+            "div"
+        );
+
+    heading.textContent =
+        "Pronunciations";
+
+    Object.assign(
+        heading.style,
+        {
+            fontWeight: "800",
+            fontSize: "16px",
+            marginBottom: "4px",
+        }
+    );
+
+
+    const help =
+        document.createElement(
+            "div"
+        );
+
+    help.textContent =
+        "Tell BMO how specific words should sound.";
+
+    Object.assign(
+        help.style,
+        {
+            fontSize: "12px",
+            opacity: "0.68",
+            marginBottom: "12px",
+        }
+    );
+
+
+    const fields =
+        document.createElement(
+            "div"
+        );
+
+    Object.assign(
+        fields.style,
+        {
+            display: "grid",
+            gridTemplateColumns:
+                "1fr 1fr",
+            gap: "8px",
+            width: "100%",
+        }
+    );
+
+
+    const word =
+        document.createElement(
+            "input"
+        );
+
+    word.id =
+        "bmo-pronunciation-word";
+
+    word.type =
+        "text";
+
+    word.placeholder =
+        "Word";
+
+    word.autocomplete =
+        "off";
+
+    word.autocapitalize =
+        "none";
+
+    word.spellcheck =
+        false;
+
+
+    const phonetic =
+        document.createElement(
+            "input"
+        );
+
+    phonetic.id =
+        "bmo-pronunciation-phonetic";
+
+    phonetic.type =
+        "text";
+
+    phonetic.placeholder =
+        "Say as";
+
+    phonetic.autocomplete =
+        "off";
+
+    phonetic.autocapitalize =
+        "none";
+
+    phonetic.spellcheck =
+        false;
+
+
+    for (
+        const input
+        of [
+            word,
+            phonetic,
+        ]
+    ) {
+        Object.assign(
+            input.style,
+            {
+                boxSizing:
+                    "border-box",
+                minWidth: "0",
+                width: "100%",
+                padding:
+                    "11px 9px",
+                borderRadius:
+                    "7px",
+                border:
+                    "1px solid rgba(0,0,0,0.35)",
+                background:
+                    "rgba(255,255,255,0.58)",
+                color:
+                    "#14351e",
+                fontSize:
+                    "14px",
+                outline:
+                    "none",
+            }
+        );
+
+        stopBMOInputPropagation(
+            input
+        );
+    }
+
+
+    const save =
+        document.createElement(
+            "button"
+        );
+
+    save.type =
+        "button";
+
+    save.textContent =
+        "Add / update";
+
+    Object.assign(
+        save.style,
+        {
+            width: "100%",
+            marginTop: "8px",
+            padding: "10px",
+            borderRadius: "7px",
+            border:
+                "1px solid rgba(0,0,0,0.35)",
+            background:
+                "rgba(255,255,255,0.48)",
+            color: "#14351e",
+            fontWeight: "800",
+            fontSize: "13px",
+        }
+    );
+
+    stopBMOInputPropagation(
+        save
+    );
+
+    save.addEventListener(
+        "click",
+        () => {
+            bmoPronunciationEditor
+                .save();
+        }
+    );
+
+
+    const enterSave =
+        (event) => {
+            if (
+                event.key ===
+                "Enter"
+            ) {
+                event.preventDefault();
+
+                bmoPronunciationEditor
+                    .save();
+            }
+        };
+
+    word.addEventListener(
+        "keydown",
+        enterSave
+    );
+
+    phonetic.addEventListener(
+        "keydown",
+        enterSave
+    );
+
+
+    const status =
+        document.createElement(
+            "div"
+        );
+
+    status.id =
+        "bmo-pronunciation-status";
+
+    Object.assign(
+        status.style,
+        {
+            minHeight: "18px",
+            marginTop: "6px",
+            fontSize: "12px",
+        }
+    );
+
+
+    const subheading =
+        document.createElement(
+            "div"
+        );
+
+    subheading.textContent =
+        "Existing rules";
+
+    Object.assign(
+        subheading.style,
+        {
+            marginTop: "9px",
+            marginBottom: "2px",
+            fontWeight: "700",
+            fontSize: "13px",
+        }
+    );
+
+
+    const list =
+        document.createElement(
+            "div"
+        );
+
+    list.id =
+        "bmo-pronunciation-list";
+
+
+    fields.appendChild(
+        word
+    );
+
+    fields.appendChild(
+        phonetic
+    );
+
+    section.appendChild(
+        heading
+    );
+
+    section.appendChild(
+        help
+    );
+
+    section.appendChild(
+        fields
+    );
+
+    section.appendChild(
+        save
+    );
+
+    section.appendChild(
+        status
+    );
+
+    section.appendChild(
+        subheading
+    );
+
+    section.appendChild(
+        list
+    );
+
+
+    faceButtons.parentNode.insertBefore(
+        section,
+        faceButtons
+    );
+
+    bmoPronunciationEditor.load();
+
+    return true;
+}
+
+
+if (
+    !installBMOPronunciationEditor()
+) {
+    const bmoPronunciationObserver =
+        new MutationObserver(
+            () => {
+                if (
+                    installBMOPronunciationEditor()
+                ) {
+                    bmoPronunciationObserver
+                        .disconnect();
+                }
+            }
+        );
+
+    bmoPronunciationObserver.observe(
+        document.body,
+        {
+            childList: true,
+            subtree: true,
+        }
+    );
+}
+
+
+window.bmoPronunciationEditor =
+    bmoPronunciationEditor;
+
+console.log(
+    "BMO pronunciation debug editor ready"
+);
+
+/* === END BMO PRONUNCIATION DEBUG EDITOR === */
