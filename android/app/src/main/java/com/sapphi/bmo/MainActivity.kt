@@ -46,6 +46,7 @@ import java.nio.ByteOrder
 import java.util.UUID
 import java.util.concurrent.TimeUnit
 import android.util.Log
+import android.media.AudioManager
 
 
 class MainActivity : AppCompatActivity() {
@@ -1795,6 +1796,77 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        @JavascriptInterface
+        fun getMediaVolume(): Int {
+            val audioManager =
+                getSystemService(
+                    Context.AUDIO_SERVICE
+                ) as AudioManager
+
+            val current =
+                audioManager.getStreamVolume(
+                    AudioManager.STREAM_MUSIC
+                )
+
+            val max =
+                audioManager.getStreamMaxVolume(
+                    AudioManager.STREAM_MUSIC
+                )
+
+            if (max <= 0) {
+                return 0
+            }
+
+            return (
+                    current *
+                            100f /
+                            max
+                    ).toInt()
+        }
+
+
+        @JavascriptInterface
+        fun setMediaVolume(
+            percent: Int
+        ) {
+            val audioManager =
+                getSystemService(
+                    Context.AUDIO_SERVICE
+                ) as AudioManager
+
+            val max =
+                audioManager.getStreamMaxVolume(
+                    AudioManager.STREAM_MUSIC
+                )
+
+            val safePercent =
+                percent.coerceIn(
+                    0,
+                    100
+                )
+
+            val targetVolume =
+                (
+                        max *
+                                (
+                                        safePercent /
+                                                100f
+                                        )
+                        ).toInt()
+
+            runOnUiThread {
+                audioManager.setStreamVolume(
+                    AudioManager.STREAM_MUSIC,
+                    targetVolume,
+                    0
+                )
+            }
+
+            Log.i(
+                WAKE_LOG,
+                "BMO media volume set to $safePercent%"
+            )
+        }
 
         @JavascriptInterface
         fun stopRecording() {
