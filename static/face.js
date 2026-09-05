@@ -10,6 +10,7 @@ const HOLD_START_DELAY_MS = 120;
 const BACKEND_CHECK_INTERVAL_MS = 5000;
 const BACKEND_CHECK_TIMEOUT_MS = 3000;
 const TIMER_EVENT_CHECK_INTERVAL_MS = 1000;
+const DEVICE_STATE_CHECK_INTERVAL_MS = 30000;
 
 const DAYDREAM_IDLE_MS = 90000;
 const DAYDREAM_THOUGHT_INTERVAL_MS = 120000;
@@ -38,47 +39,334 @@ function getNativeBridge() {
 
 class BMOFaceRenderer {
     constructor(canvas) {
-        this.canvas = canvas;
-        this.ctx = canvas.getContext("2d");
+        this.canvas =
+            canvas;
 
-        this.width = canvas.width;
-        this.height = canvas.height;
+        this.ctx =
+            canvas.getContext(
+                "2d"
+            );
 
-        this.ctx.imageSmoothingEnabled = true;
-        this.ctx.imageSmoothingQuality = "high";
+        this.width =
+            canvas.width;
 
-        this.colors = {
-            bg: "#bdffcb",
-            line: "#000000",
-            mouthDark: "#298339",
-            tongue: "#70c370",
-            teeth: "#ffffff",
-        };
+        this.height =
+            canvas.height;
 
-        this.eyeY = 195;
-        this.leftEyeX = 217;
-        this.rightEyeX = 581;
-        this.eyeR = 18;
+        this.ctx.imageSmoothingEnabled =
+            true;
 
-        this.mouthY = 302;
-        this.mouthW = 97;
+        this.ctx.imageSmoothingQuality =
+            "high";
 
-        this.state = "idle";
+        this.backgroundColor =
+            "#c9e4c3";
 
-        this.frame = 0;
-        this.blink = 0;
+        this.state =
+            "idle";
 
-        this.eyeOffsetX = 0;
-        this.eyeOffsetY = 0;
+        /*
+         * Kept for compatibility with the existing audio visualizer.
+         *
+         * setupVisualizer() already writes bmoRenderer.mouthOpen.
+         * Instead of stretching a procedural mouth, we now map that
+         * value onto BMO's real artist-drawn speaking viseme frames.
+         */
+        this.mouthOpen =
+            0;
 
-        this.eyePulseR = 0;
-        this.mouthOpen = 0;
+        this.frames =
+            new Map();
+
+        this.loadingStates =
+            new Set();
+
+        this.failedStates =
+            new Set();
+
+        this.playOnceStates =
+            new Set(
+                [
+                    "warmup",
+                ]
+            );
+
+        this.lastState =
+            null;
+
+        this.frameIndex =
+            0;
+
+        this.lastFrameAt =
+            0;
+
+        this.lastSpeakingFrame =
+            0;
+
+        /*
+         * Startup deliberately loads warmup first so the animation
+         * cannot disappear behind the idle fallback while assets load.
+         */
+    }
+
+
+    get knownStates() {
+        return [
+            "idle",
+            "listening",
+            "thinking",
+            "speaking",
+            "happy",
+            "sad",
+            "angry",
+            "surprised",
+            "sleepy",
+            "daydream",
+            "dizzy",
+            "cheeky",
+            "heart",
+            "starry_eyed",
+            "confused",
+            "shhh",
+            "jamming",
+            "football",
+            "detective",
+            "sir_mano",
+            "low_battery",
+            "bee",
+            "ladybug",
+            "worm",
+            "bored",
+            "curious",
+            "error",
+            "capturing",
+            "warmup",
+        ];
+    }
+
+
+    getFrameDelay(
+        state
+    ) {
+        switch (
+            state
+        ) {
+            case "idle":
+                /*
+                 * The idle set contains its own long blink cycle.
+                 */
+                return 120;
+
+            case "listening":
+                return 120;
+
+            case "thinking":
+                return 130;
+
+            case "daydream":
+                return 160;
+
+            case "sleepy":
+                return 220;
+
+            case "bee":
+            case "ladybug":
+            case "worm":
+                return 110;
+
+            case "jamming":
+                return 90;
+
+            case "dizzy":
+                return 130;
+
+            case "warmup":
+                return 260;
+
+            default:
+                return 140;
+        }
+    }
+
+
+    async preloadStates() {
+        for (
+            const state
+            of this.knownStates
+        ) {
+            this.loadState(
+                state
+            );
+        }
+    }
+
+
+    async loadState(
+        state
+    ) {
+        if (
+            this.frames.has(
+                state
+            ) ||
+            this.loadingStates.has(
+                state
+            ) ||
+            this.failedStates.has(
+                state
+            )
+        ) {
+            return;
+        }
+
+        this.loadingStates.add(
+            state
+        );
+
+        try {
+            const response =
+                await fetch(
+                    `/api/faces/${encodeURIComponent(state)}`,
+                    {
+                        cache:
+                            "no-store",
+                    }
+                );
+
+            if (
+                !response.ok
+            ) {
+                throw new Error(
+                    `Face list HTTP ${response.status}`
+                );
+            }
+
+            const data =
+                await response.json();
+
+            let paths =
+                Array.isArray(
+                    data.images
+                )
+                    ? data.images
+                    : [];
+
+            /*
+             * Some folders contain old duplicate files such as:
+             *
+             *     speaking 01.png
+             *     speaking_01.png
+             *
+             * Prefer the generated underscore naming convention whenever
+             * it exists.
+             */
+            const cleanPaths =
+                paths.filter(
+                    (imagePath) => {
+                        const filename =
+                            String(
+                                imagePath
+                            )
+                                .split("/")
+                                .pop();
+
+                        return filename
+                            .startsWith(
+                                `${state}_`
+                            );
+                    }
+                );
+
+            if (
+                cleanPaths.length >
+                0
+            ) {
+                paths =
+                    cleanPaths;
+            }
+
+            if (
+                paths.length ===
+                0
+            ) {
+                throw new Error(
+                    `No frames found for ${state}`
+                );
+            }
+
+            const images =
+                await Promise.all(
+                    paths.map(
+                        (imagePath) =>
+                            new Promise(
+                                (
+                                    resolve,
+                                    reject
+                                ) => {
+                                    const image =
+                                        new Image();
+
+                                    image.onload =
+                                        () => {
+                                            resolve(
+                                                image
+                                            );
+                                        };
+
+                                    image.onerror =
+                                        () => {
+                                            reject(
+                                                new Error(
+                                                    `Could not load ${imagePath}`
+                                                )
+                                            );
+                                        };
+
+                                    image.src =
+                                        `${imagePath}?v=2`;
+                                }
+                            )
+                    )
+                );
+
+            this.frames.set(
+                state,
+                images
+            );
+
+            console.log(
+                `Loaded ${images.length} BMO face frames for ${state}`
+            );
+
+        } catch (error) {
+            console.warn(
+                `Could not load BMO face state ${state}:`,
+                error
+            );
+
+            this.failedStates.add(
+                state
+            );
+
+        } finally {
+            this.loadingStates.delete(
+                state
+            );
+        }
+    }
+
+
+    isPlayOnceState(
+        state
+    ) {
+        return this.playOnceStates.has(
+            state
+        );
     }
 
 
     clear() {
         this.ctx.fillStyle =
-            this.colors.bg;
+            this.backgroundColor;
 
         this.ctx.fillRect(
             0,
@@ -89,575 +377,238 @@ class BMOFaceRenderer {
     }
 
 
-    drawArc(
-        cx,
-        cy,
-        r,
-        start,
-        end,
-        width = 12
+    drawImageFrame(
+        image
     ) {
-        this.ctx.beginPath();
-
-        this.ctx.arc(
-            cx,
-            cy,
-            r,
-            start,
-            end
-        );
-
-        this.ctx.strokeStyle =
-            this.colors.line;
-
-        this.ctx.lineWidth =
-            width;
-
-        this.ctx.lineCap =
-            "round";
-
-        this.ctx.stroke();
-    }
-
-
-    drawCircle(
-        cx,
-        cy,
-        r,
-        filled = true
-    ) {
-        this.ctx.beginPath();
-
-        this.ctx.arc(
-            cx,
-            cy,
-            r,
-            0,
-            Math.PI * 2
-        );
-
-        if (filled) {
-            this.ctx.fillStyle =
-                this.colors.line;
-
-            this.ctx.fill();
-
-        } else {
-            this.ctx.strokeStyle =
-                this.colors.line;
-
-            this.ctx.lineWidth =
-                12;
-
-            this.ctx.stroke();
-        }
-    }
-
-
-    drawLine(
-        x1,
-        y1,
-        x2,
-        y2,
-        width = 12
-    ) {
-        this.ctx.beginPath();
-
-        this.ctx.moveTo(
-            x1,
-            y1
-        );
-
-        this.ctx.lineTo(
-            x2,
-            y2
-        );
-
-        this.ctx.strokeStyle =
-            this.colors.line;
-
-        this.ctx.lineWidth =
-            width;
-
-        this.ctx.lineCap =
-            "round";
-
-        this.ctx.stroke();
-    }
-
-
-    drawMouth(
-        type,
-        height = 0,
-        width = this.mouthW
-    ) {
-        const centerX =
-            this.width / 2;
-
-        const centerY =
-            this.mouthY;
-
-        const halfWidth =
-            width / 2;
-
-        this.ctx.lineWidth =
-            12;
-
-        this.ctx.strokeStyle =
-            this.colors.line;
-
-        this.ctx.lineCap =
-            "round";
-
-        if (
-            type === "straight" ||
-            (
-                type === "speaking" &&
-                height === 0
-            )
-        ) {
-            this.drawLine(
-                centerX - halfWidth,
-                centerY,
-                centerX + halfWidth,
-                centerY
-            );
-
-            return;
-        }
-
-        if (
-            type === "smile"
-        ) {
-            this.ctx.beginPath();
-
-            this.ctx.arc(
-                centerX,
-                centerY - 25,
-                halfWidth,
-                Math.PI * 0.15,
-                Math.PI * 0.85
-            );
-
-            this.ctx.stroke();
-
-            return;
-        }
-
-        if (
-            type === "frown"
-        ) {
-            this.ctx.beginPath();
-
-            this.ctx.arc(
-                centerX,
-                centerY + 15,
-                halfWidth,
-                Math.PI * 1.15,
-                Math.PI * 1.85
-            );
-
-            this.ctx.stroke();
-
-            return;
-        }
-
-        if (
-            type === "speaking"
-        ) {
-            const radius =
-                height / 2;
-
-            this.ctx.beginPath();
-
-            this.ctx.roundRect(
-                centerX - halfWidth,
-                centerY - radius,
-                width,
-                height,
-                radius
-            );
-
-            this.ctx.fillStyle =
-                this.colors.mouthDark;
-
-            this.ctx.fill();
-            this.ctx.stroke();
-
-            if (
-                height > 25
-            ) {
-                this.ctx.fillStyle =
-                    this.colors.teeth;
-
-                this.ctx.beginPath();
-
-                this.ctx.roundRect(
-                    centerX - halfWidth + 10,
-                    centerY - radius + 5,
-                    width - 20,
-                    height / 4,
-                    4
-                );
-
-                this.ctx.fill();
-            }
-
-            if (
-                height > 40
-            ) {
-                this.ctx.fillStyle =
-                    this.colors.tongue;
-
-                this.ctx.beginPath();
-
-                this.ctx.ellipse(
-                    centerX,
-                    centerY + radius - 8,
-                    halfWidth - 15,
-                    height / 4,
-                    0,
-                    0,
-                    Math.PI * 2
-                );
-
-                this.ctx.fill();
-            }
-        }
-    }
-
-
-    render() {
         this.clear();
 
-        const frame =
-            this.frame++;
-
-        let eyeType =
-            "regular";
-
-        let mouthType =
-            "straight";
-
-        let currentHeight =
-            0;
-
-        let currentWidth =
-            this.mouthW;
-
         if (
-            ![
-                "sleepy",
-                "thinking",
-                "listening",
-            ].includes(
-                this.state
-            )
+            !image
         ) {
-            const blinkFrame =
-                frame % 170;
+            return;
+        }
 
-            if (
-                blinkFrame < 5
-            ) {
-                this.blink =
-                    1;
+        /*
+         * Generated face PNGs are 800x480, but draw them against the
+         * actual canvas dimensions anyway so this remains future-proof.
+         */
+        this.ctx.drawImage(
+            image,
+            0,
+            0,
+            this.width,
+            this.height
+        );
+    }
 
-            } else if (
-                blinkFrame < 8
-            ) {
-                this.blink =
-                    0.5;
 
-            } else {
-                this.blink =
-                    0;
-            }
-
-        } else if (
-            this.state ===
-            "sleepy"
+    getSpeakingFrameIndex(
+        frameCount
+    ) {
+        if (
+            frameCount <=
+            1
         ) {
-            this.blink =
+            return 0;
+        }
+
+        /*
+         * mouthOpen is now normalized by setupVisualizer():
+         *
+         *     0.0 = silence / closed mouth
+         *     1.0 = strong speech / widest mouth
+         *
+         * Spread that smoothly across however many artist-drawn
+         * viseme frames are available.
+         */
+        const level =
+            Math.max(
+                0,
+                Math.min(
+                    1,
+                    Number(
+                        this.mouthOpen
+                    ) || 0
+                )
+            );
+
+        let target =
+            Math.round(
+                level *
+                (
+                    frameCount -
+                    1
+                )
+            );
+
+        /*
+         * Speech looks much more natural if the mouth does not jump
+         * directly from fully open to fully closed.
+         */
+        if (
+            target >
+            this.lastSpeakingFrame +
+                1
+        ) {
+            target =
+                this.lastSpeakingFrame +
                 1;
         }
 
         if (
-            this.state ===
-            "idle"
+            target <
+            this.lastSpeakingFrame -
+                1
         ) {
-            const movement =
-                frame % 360;
+            target =
+                this.lastSpeakingFrame -
+                1;
+        }
+
+        target =
+            Math.max(
+                0,
+                Math.min(
+                    frameCount - 1,
+                    target
+                )
+            );
+
+        this.lastSpeakingFrame =
+            target;
+
+        return target;
+    }
+
+    render() {
+        const now =
+            performance.now();
+
+        const state =
+            this.frames.has(
+                this.state
+            )
+                ? this.state
+                : "idle";
+
+        if (
+            !this.frames.has(
+                this.state
+            ) &&
+            !this.loadingStates.has(
+                this.state
+            ) &&
+            !this.failedStates.has(
+                this.state
+            )
+        ) {
+            this.loadState(
+                this.state
+            );
+        }
+
+        if (
+            state !==
+            this.lastState
+        ) {
+            this.lastState =
+                state;
+
+            this.frameIndex =
+                0;
+
+            this.lastFrameAt =
+                now;
 
             if (
-                movement < 60
+                state !==
+                "speaking"
             ) {
-                this.eyeOffsetX =
-                    -10;
-
-            } else if (
-                movement < 120
-            ) {
-                this.eyeOffsetX =
-                    0;
-
-            } else if (
-                movement < 180
-            ) {
-                this.eyeOffsetX =
-                    10;
-
-            } else {
-                this.eyeOffsetX =
+                this.lastSpeakingFrame =
                     0;
             }
         }
 
-        if (
-            this.state ===
-            "thinking"
-        ) {
-            this.eyeOffsetX =
-                Math.sin(
-                    frame * 0.18
-                ) * 15;
-        }
+        const stateFrames =
+            this.frames.get(
+                state
+            );
 
         if (
-            this.state ===
-            "listening"
+            stateFrames &&
+            stateFrames.length >
+                0
         ) {
-            this.eyePulseR =
-                Math.sin(
-                    frame * 0.2
-                ) * 2;
-
-            eyeType =
-                "circle";
-        }
-
-        if (
-            this.state ===
-            "speaking"
-        ) {
-            eyeType =
-                "circle";
-
-            mouthType =
-                "speaking";
-
             if (
-                this.mouthOpen >
-                0.5
+                state ===
+                "speaking"
             ) {
-                currentHeight =
-                    Math.min(
-                        65,
-                        this.mouthOpen *
-                            1.5
+                const index =
+                    this.getSpeakingFrameIndex(
+                        stateFrames.length
                     );
 
-                currentWidth =
-                    Math.min(
-                        105,
-                        80 +
-                            this.mouthOpen *
-                            0.5
-                    );
+                this.drawImageFrame(
+                    stateFrames[
+                        index
+                    ]
+                );
 
             } else {
-                currentHeight =
-                    0;
+                const delay =
+                    this.getFrameDelay(
+                        state
+                    );
 
-                currentWidth =
-                    this.mouthW;
+                if (
+                    now -
+                    this.lastFrameAt >=
+                    delay
+                ) {
+                    if (
+                        this.isPlayOnceState(
+                            state
+                        )
+                    ) {
+                        this.frameIndex =
+                            Math.min(
+                                this.frameIndex +
+                                    1,
+                                stateFrames.length -
+                                    1
+                            );
+
+                    } else {
+                        this.frameIndex =
+                            (
+                                this.frameIndex +
+                                1
+                            ) %
+                            stateFrames.length;
+                    }
+
+                    this.lastFrameAt =
+                        now;
+                }
+
+                this.drawImageFrame(
+                    stateFrames[
+                        this.frameIndex
+                    ]
+                );
             }
+
+        } else {
+            this.clear();
         }
-
-        switch (
-            this.state
-        ) {
-            case "happy":
-                eyeType =
-                    "happy";
-
-                mouthType =
-                    "smile";
-
-                break;
-
-            case "sad":
-            case "error":
-                eyeType =
-                    "sad";
-
-                mouthType =
-                    "frown";
-
-                break;
-
-            case "angry":
-                eyeType =
-                    "angry";
-
-                mouthType =
-                    "straight";
-
-                break;
-
-            case "surprised":
-                eyeType =
-                    "circle";
-
-                mouthType =
-                    "speaking";
-
-                currentHeight =
-                    40;
-
-                currentWidth =
-                    60;
-
-                break;
-
-            case "sleepy":
-                eyeType =
-                    "closed";
-
-                break;
-
-            case "daydream":
-                eyeType =
-                    "regular";
-
-                this.eyeOffsetY =
-                    -10;
-
-                break;
-        }
-
-        const drawEye =
-            (x, y) => {
-                let radius =
-                    this.eyeR;
-
-                if (
-                    this.state ===
-                    "listening"
-                ) {
-                    radius +=
-                        this.eyePulseR;
-                }
-
-                if (
-                    this.blink >=
-                        0.9 ||
-                    eyeType ===
-                        "closed"
-                ) {
-                    this.drawLine(
-                        x - radius,
-                        y,
-                        x + radius,
-                        y
-                    );
-
-                } else if (
-                    this.blink >
-                    0
-                ) {
-                    this.drawArc(
-                        x,
-                        y,
-                        radius,
-                        -0.2,
-                        Math.PI +
-                            0.2
-                    );
-
-                } else if (
-                    eyeType ===
-                    "happy"
-                ) {
-                    this.drawArc(
-                        x,
-                        y + 10,
-                        radius,
-                        Math.PI,
-                        Math.PI * 2
-                    );
-
-                } else if (
-                    eyeType ===
-                    "circle"
-                ) {
-                    this.drawCircle(
-                        x,
-                        y,
-                        radius - 2
-                    );
-
-                } else if (
-                    eyeType ===
-                    "sad"
-                ) {
-                    this.drawLine(
-                        x - 15,
-                        y + 10,
-                        x + 15,
-                        y - 5
-                    );
-
-                } else if (
-                    eyeType ===
-                    "angry"
-                ) {
-                    this.drawLine(
-                        x - 15,
-                        y - 5,
-                        x + 15,
-                        y + 10
-                    );
-
-                } else {
-                    this.drawArc(
-                        x,
-                        y,
-                        radius,
-                        -0.4,
-                        Math.PI +
-                            0.4
-                    );
-                }
-            };
-
-        drawEye(
-            this.leftEyeX +
-                this.eyeOffsetX,
-            this.eyeY +
-                this.eyeOffsetY
-        );
-
-        drawEye(
-            this.rightEyeX +
-                this.eyeOffsetX,
-            this.eyeY +
-                this.eyeOffsetY
-        );
-
-        this.drawMouth(
-            mouthType,
-            currentHeight,
-            currentWidth
-        );
 
         requestAnimationFrame(
-            () =>
-                this.render()
+            () => {
+                this.render();
+            }
         );
     }
 }
-
 
 const bmoRenderer =
     new BMOFaceRenderer(
@@ -687,6 +638,9 @@ let timerEventCheckTimer = null;
 let pendingTimerEvents = [];
 let processingTimerEvent = false;
 
+let deviceStateCheckTimer = null;
+let automaticLowBatteryActive = false;
+
 let currentAudio = null;
 
 let statusTimer = null;
@@ -702,6 +656,7 @@ let pendingExpression = null;
 let expressionTimer = null;
 
 let pendingCaptureAction = null;
+let pendingDeviceAction = null;
 
 let daydreamTimer = null;
 let daydreamThoughtTimer = null;
@@ -745,6 +700,25 @@ const VALID_EXPRESSIONS =
             "surprised",
             "sleepy",
             "daydream",
+            "dizzy",
+            "cheeky",
+            "heart",
+            "starry_eyed",
+            "confused",
+            "shhh",
+            "jamming",
+            "football",
+            "detective",
+            "sir_mano",
+            "low_battery",
+            "bee",
+            "ladybug",
+            "worm",
+            "bored",
+            "curious",
+            "error",
+            "capturing",
+            "warmup",
         ]
     );
 
@@ -923,6 +897,551 @@ function runPendingCaptureAction() {
 
 
 /*
+ * Native Android device state
+ */
+
+function readNativeBatteryState() {
+    const nativeBridge =
+        getNativeBridge();
+
+    if (
+        !nativeBridge
+    ) {
+        throw new Error(
+            "Native Android bridge unavailable"
+        );
+    }
+
+    const rawState =
+        nativeBridge.getBatteryState();
+
+    const state =
+        JSON.parse(
+            String(
+                rawState ||
+                "{}"
+            )
+        );
+
+    if (
+        !state ||
+        state.available !==
+            true
+    ) {
+        throw new Error(
+            "Battery state unavailable"
+        );
+    }
+
+    return state;
+}
+
+
+async function sendNativeBatteryState(
+    action
+) {
+    stopDaydream(
+        false
+    );
+
+    clearTimeout(
+        daydreamTimer
+    );
+
+    daydreamTimer =
+        null;
+
+    setFaceState(
+        "thinking"
+    );
+
+    showStatus(
+        "Checking battery...",
+        0
+    );
+
+    try {
+        const batteryState =
+            readNativeBatteryState();
+
+        const batteryPercent =
+            Number(
+                batteryState.battery_percent
+            );
+
+        const charging =
+            Boolean(
+                batteryState.charging
+            );
+
+        if (
+            Number.isFinite(
+                batteryPercent
+            ) &&
+            batteryPercent <= 15 &&
+            !charging
+        ) {
+            setFaceState(
+                "low_battery"
+            );
+
+        } else {
+            setFaceState(
+                "thinking"
+            );
+        }
+
+        const response =
+            await fetch(
+                "/api/device-battery",
+                {
+                    method:
+                        "POST",
+
+                    headers: {
+                        "Content-Type":
+                            "application/json",
+                    },
+
+                    body:
+                        JSON.stringify(
+                            {
+                                message:
+                                    String(
+                                        action.message ||
+                                        ""
+                                    ),
+
+                                battery_percent:
+                                    batteryState.battery_percent,
+
+                                charging:
+                                    Boolean(
+                                        batteryState.charging
+                                    ),
+                            }
+                        ),
+                }
+            );
+
+        if (
+            !response.ok
+        ) {
+            throw new Error(
+                `Device battery HTTP ${response.status}`
+            );
+        }
+
+        const data =
+            await response.json();
+
+        setBackendOnline(
+            true
+        );
+
+        if (
+            data.history
+        ) {
+            conversationHistory =
+                data.history;
+        }
+
+        if (
+            data.response
+        ) {
+            showTranscript(
+                data.response,
+                3500
+            );
+        }
+
+        const handledServerAction =
+            handleServerAction(
+                data.action,
+                Boolean(
+                    data.audio_url
+                )
+            );
+
+        if (
+            data.audio_url
+        ) {
+            await playBMOAudio(
+                data.audio_url
+            );
+
+            return;
+        }
+
+        if (
+            handledServerAction
+        ) {
+            return;
+        }
+
+        setFaceState(
+            "idle"
+        );
+
+        showStatus(
+            "Ready",
+            1200
+        );
+
+        resetDaydreamTimer();
+
+    } catch (error) {
+        console.error(
+            "Android battery state failed:",
+            error
+        );
+
+        setFaceState(
+            "error"
+        );
+
+        showStatus(
+            "Battery status unavailable",
+            2500
+        );
+
+        setTimeout(
+            () => {
+                setFaceState(
+                    "idle"
+                );
+
+                resetDaydreamTimer();
+            },
+            1800
+        );
+    }
+}
+
+
+function runPendingDeviceAction() {
+    if (
+        !pendingDeviceAction
+    ) {
+        return false;
+    }
+
+    const action =
+        pendingDeviceAction;
+
+    pendingDeviceAction =
+        null;
+
+    sendNativeBatteryState(
+        action
+    );
+
+    return true;
+}
+
+
+/*
+ * Native Android network state
+ */
+
+function readNativeNetworkState() {
+    const nativeBridge =
+        getNativeBridge();
+
+    if (
+        !nativeBridge
+    ) {
+        throw new Error(
+            "Native Android bridge unavailable"
+        );
+    }
+
+    const rawState =
+        nativeBridge.getNetworkState();
+
+    const state =
+        JSON.parse(
+            String(
+                rawState ||
+                "{}"
+            )
+        );
+
+    if (
+        !state ||
+        state.available !==
+            true
+    ) {
+        throw new Error(
+            "Network state unavailable"
+        );
+    }
+
+    return state;
+}
+
+
+async function sendNativeNetworkState(
+    action
+) {
+    stopDaydream(
+        false
+    );
+
+    setFaceState(
+        "thinking"
+    );
+
+    showStatus(
+        "Checking connection...",
+        0
+    );
+
+    try {
+        const networkState =
+            readNativeNetworkState();
+
+        const response =
+            await fetch(
+                "/api/device-network",
+                {
+                    method:
+                        "POST",
+
+                    headers: {
+                        "Content-Type":
+                            "application/json",
+                    },
+
+                    body:
+                        JSON.stringify(
+                            {
+                                message:
+                                    String(
+                                        action.message ||
+                                        ""
+                                    ),
+
+                                connected:
+                                    Boolean(
+                                        networkState.connected
+                                    ),
+
+                                network_type:
+                                    String(
+                                        networkState.network_type ||
+                                        "none"
+                                    ),
+                            }
+                        ),
+                }
+            );
+
+        if (
+            !response.ok
+        ) {
+            throw new Error(
+                `Device network HTTP ${response.status}`
+            );
+        }
+
+        const data =
+            await response.json();
+
+        setBackendOnline(
+            true
+        );
+
+        if (
+            data.history
+        ) {
+            conversationHistory =
+                data.history;
+        }
+
+        if (
+            data.response
+        ) {
+            showTranscript(
+                data.response,
+                3500
+            );
+        }
+
+        if (
+            data.audio_url
+        ) {
+            await playBMOAudio(
+                data.audio_url
+            );
+
+            return;
+        }
+
+        setFaceState(
+            "idle"
+        );
+
+        resetDaydreamTimer();
+
+    } catch (error) {
+        console.error(
+            "Android network state failed:",
+            error
+        );
+
+        setFaceState(
+            "error"
+        );
+
+        showStatus(
+            "Network status unavailable",
+            2500
+        );
+
+        setTimeout(
+            () => {
+                setFaceState(
+                    "idle"
+                );
+
+                resetDaydreamTimer();
+            },
+            1800
+        );
+    }
+}
+
+
+/*
+ * Automatic Android battery monitoring
+ */
+
+function canShowAutomaticLowBattery() {
+    return (
+        !isRecording &&
+        !recordingStartPending &&
+        !currentAudio &&
+        !processingTimerEvent &&
+        pendingTimerEvents.length ===
+            0 &&
+        !pendingCaptureAction &&
+        !pendingDeviceAction &&
+        (
+            bmoRenderer.state ===
+                "idle" ||
+            bmoRenderer.state ===
+                "daydream" ||
+            bmoRenderer.state ===
+                "sleepy" ||
+            bmoRenderer.state ===
+                "bored" ||
+            bmoRenderer.state ===
+                "low_battery"
+        )
+    );
+}
+
+
+function updateAutomaticBatteryFace() {
+    const nativeBridge =
+        getNativeBridge();
+
+    if (
+        !nativeBridge
+    ) {
+        return;
+    }
+
+    try {
+        const batteryState =
+            readNativeBatteryState();
+
+        const batteryPercent =
+            Number(
+                batteryState.battery_percent
+            );
+
+        const charging =
+            Boolean(
+                batteryState.charging
+            );
+
+        const shouldUseLowBattery =
+            Number.isFinite(
+                batteryPercent
+            ) &&
+            batteryPercent <= 15 &&
+            !charging;
+
+        if (
+            shouldUseLowBattery
+        ) {
+            automaticLowBatteryActive =
+                true;
+
+            if (
+                canShowAutomaticLowBattery()
+            ) {
+                stopDaydream(
+                    false
+                );
+
+                setFaceState(
+                    "low_battery"
+                );
+            }
+
+            return;
+        }
+
+        if (
+            automaticLowBatteryActive
+        ) {
+            automaticLowBatteryActive =
+                false;
+
+            if (
+                bmoRenderer.state ===
+                    "low_battery"
+            ) {
+                setFaceState(
+                    "idle"
+                );
+
+                resetDaydreamTimer();
+            }
+        }
+
+    } catch (error) {
+        console.debug(
+            "Automatic battery check failed:",
+            error
+        );
+    }
+}
+
+
+function scheduleDeviceStateChecks() {
+    if (
+        deviceStateCheckTimer
+    ) {
+        clearInterval(
+            deviceStateCheckTimer
+        );
+    }
+
+    updateAutomaticBatteryFace();
+
+    deviceStateCheckTimer =
+        setInterval(
+            updateAutomaticBatteryFace,
+            DEVICE_STATE_CHECK_INTERVAL_MS
+        );
+}
+
+
+/*
  * Server actions
  */
 
@@ -936,6 +1455,53 @@ function handleServerAction(
             "object"
     ) {
         return false;
+    }
+
+    if (
+        action.type ===
+            "get_device_network"
+    ) {
+        sendNativeNetworkState(
+            {
+                message:
+                    String(
+                        action.message ||
+                        ""
+                    ),
+            }
+        );
+
+        return true;
+    }
+
+    if (
+        action.type ===
+            "get_device_battery"
+    ) {
+        const batteryAction = {
+            message:
+                String(
+                    action.message ||
+                    ""
+                ),
+        };
+
+        if (
+            deferUntilAfterAudio ||
+            currentAudio ||
+            bmoRenderer.state ===
+                "speaking"
+        ) {
+            pendingDeviceAction =
+                batteryAction;
+
+        } else {
+            sendNativeBatteryState(
+                batteryAction
+            );
+        }
+
+        return true;
     }
 
     if (
@@ -1171,12 +1737,33 @@ function scheduleDaydreamMood() {
                     return;
                 }
 
+                /*
+                 * Idle BMO occasionally wanders into little critter
+                 * animations and odd moods.
+                 *
+                 * Repeated entries act as simple weighting so the
+                 * stranger states stay delightful rather than constant.
+                 */
                 const moods = [
                     "daydream",
                     "daydream",
-                    "sleepy",
+                    "daydream",
+
                     "idle",
+                    "idle",
+
+                    "sleepy",
+                    "bored",
+                    "starry_eyed",
+
                     "happy",
+                    "curious",
+
+                    "bee",
+                    "ladybug",
+                    "worm",
+
+                    "dizzy",
                 ];
 
                 const nextMood =
@@ -2645,6 +3232,15 @@ async function playBMOAudio(
                     false;
             }
 
+            const deviceActionStarted =
+                runPendingDeviceAction();
+
+            if (
+                deviceActionStarted
+            ) {
+                return;
+            }
+
             const captureStarted =
                 runPendingCaptureAction();
 
@@ -2660,9 +3256,18 @@ async function playBMOAudio(
             if (
                 !expressionApplied
             ) {
-                setFaceState(
-                    "idle"
-                );
+                if (
+                    automaticLowBatteryActive
+                ) {
+                    setFaceState(
+                        "low_battery"
+                    );
+
+                } else {
+                    setFaceState(
+                        "idle"
+                    );
+                }
             }
 
             showStatus(
@@ -2791,6 +3396,9 @@ function setupVisualizer(
     analyser.fftSize =
         256;
 
+    analyser.smoothingTimeConstant =
+        0.35;
+
     source.connect(
         analyser
     );
@@ -2804,11 +3412,18 @@ function setupVisualizer(
             analyser.frequencyBinCount
         );
 
+    let smoothedLevel =
+        0;
+
+
     function syncMouth() {
+        /*
+         * setupVisualizer() is called just BEFORE audioElement.play().
+         *
+         * On the first animation frame the audio may therefore still be
+         * paused. Do not kill the lip-sync loop in that tiny window.
+         */
         if (
-            bmoRenderer.state !==
-                "speaking" ||
-            audioElement.paused ||
             audioElement.ended
         ) {
             bmoRenderer.mouthOpen =
@@ -2817,11 +3432,37 @@ function setupVisualizer(
             return;
         }
 
+        if (
+            bmoRenderer.state !==
+                "speaking"
+        ) {
+            bmoRenderer.mouthOpen =
+                0;
+
+            return;
+        }
+
+        if (
+            audioElement.paused
+        ) {
+            bmoRenderer.mouthOpen =
+                0;
+
+            requestAnimationFrame(
+                syncMouth
+            );
+
+            return;
+        }
+
         analyser.getByteTimeDomainData(
             dataArray
         );
 
-        let sum =
+        /*
+         * Calculate RMS audio amplitude around WebAudio's midpoint.
+         */
+        let sumSquares =
             0;
 
         for (
@@ -2830,27 +3471,88 @@ function setupVisualizer(
                 dataArray.length;
             index++
         ) {
-            sum +=
-                Math.abs(
+            const sample =
+                (
                     dataArray[index] -
                     128
+                ) /
+                128;
+
+            sumSquares +=
+                sample *
+                sample;
+        }
+
+        const rms =
+            Math.sqrt(
+                sumSquares /
+                dataArray.length
+            );
+
+        /*
+         * Piper speech occupies a fairly small normalized amplitude
+         * range, so expand it into a useful 0.0 -> 1.0 mouth level.
+         */
+        let level =
+            (
+                rms -
+                0.008
+            ) *
+            12;
+
+        level =
+            Math.max(
+                0,
+                Math.min(
+                    1,
+                    level
+                )
+            );
+
+        /*
+         * Open quickly on speech, relax more slowly between sounds.
+         */
+        if (
+            level >
+            smoothedLevel
+        ) {
+            smoothedLevel =
+                (
+                    smoothedLevel *
+                    0.25
+                ) +
+                (
+                    level *
+                    0.75
+                );
+
+        } else {
+            smoothedLevel =
+                (
+                    smoothedLevel *
+                    0.72
+                ) +
+                (
+                    level *
+                    0.28
                 );
         }
 
         bmoRenderer.mouthOpen =
-            (
-                sum /
-                dataArray.length
-            ) * 4;
+            smoothedLevel;
 
         requestAnimationFrame(
             syncMouth
         );
     }
 
+
+    /*
+     * Start the loop immediately. If audio playback has not begun yet,
+     * syncMouth() now waits rather than terminating permanently.
+     */
     syncMouth();
 }
-
 
 /*
  * Touch controls
@@ -3196,7 +3898,7 @@ window.onNativeVisionStarted =
             null;
 
         setFaceState(
-            "thinking"
+            "capturing"
         );
 
         showStatus(
@@ -3349,15 +4051,80 @@ window.onNativeVisionError =
  * Startup
  */
 
-setFaceState(
-    "idle"
-);
+async function startBMOFace() {
+    showStatus(
+        "Waking up...",
+        0
+    );
 
-showStatus(
-    "Hold anywhere to talk",
-    3500
-);
+    /*
+     * Load the startup animation before selecting it.
+     * Otherwise the renderer temporarily falls back to idle while the
+     * warmup PNGs are still arriving from the backend.
+     */
+    await bmoRenderer.loadState(
+        "warmup"
+    );
+
+    setFaceState(
+        "warmup"
+    );
+
+    const warmupFrames =
+        bmoRenderer.frames.get(
+            "warmup"
+        ) || [];
+
+    const warmupDelay =
+        bmoRenderer.getFrameDelay(
+            "warmup"
+        );
+
+    /*
+     * Play the warmup animation exactly once.
+     * Example: 5 frames × 260 ms = 1300 ms.
+     */
+    const warmupDuration =
+        Math.max(
+            900,
+            warmupFrames.length *
+                warmupDelay
+        );
+
+    await new Promise(
+        (resolve) => {
+            setTimeout(
+                resolve,
+                warmupDuration
+            );
+        }
+    );
+
+    if (
+        !isRecording &&
+        !recordingStartPending &&
+        !currentAudio
+    ) {
+        setFaceState(
+            "idle"
+        );
+
+        showStatus(
+            "Hold anywhere to talk",
+            2500
+        );
+    }
+
+    /*
+     * Once the important startup faces are ready, load everything else.
+     */
+    bmoRenderer.preloadStates();
+}
+
 
 scheduleBackendChecks();
 scheduleTimerEventChecks();
+scheduleDeviceStateChecks();
 resetDaydreamTimer();
+
+startBMOFace();

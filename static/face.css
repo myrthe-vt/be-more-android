@@ -141,3 +141,18 @@ body {
         transform: translateY(-50%);
     }
 }
+
+
+/*
+ * Match the generated BMO artwork exactly.
+ * The face PNGs use RGB(201, 228, 195) = #c9e4c3.
+ */
+html,
+body,
+#bmo-screen {
+    background-color: #c9e4c3 !important;
+}
+
+#bmo-face-canvas {
+    background-color: #c9e4c3 !important;
+}

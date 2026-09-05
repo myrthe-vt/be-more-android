@@ -369,6 +369,18 @@ class ChatRequest(BaseModel):
     play_on_hardware: bool = False
     image: str = None # Optional base64 image for vision tasks
 
+
+class DeviceBatteryRequest(BaseModel):
+    message: str = ""
+    battery_percent: int
+    charging: bool
+
+class DeviceNetworkRequest(BaseModel):
+    message: str = ""
+    connected: bool
+    network_type: str = "none"
+
+
 class PronunciationRequest(BaseModel):
     word: str
     phonetic: str
@@ -583,6 +595,25 @@ VALID_EXPRESSIONS = {
     "surprised",
     "sleepy",
     "daydream",
+    "dizzy",
+    "cheeky",
+    "heart",
+    "starry_eyed",
+    "confused",
+    "shhh",
+    "jamming",
+    "football",
+    "detective",
+    "sir_mano",
+    "low_battery",
+    "bee",
+    "ladybug",
+    "worm",
+    "bored",
+    "curious",
+    "error",
+    "capturing",
+    "warmup",
 }
 
 EXPRESSION_ALIASES = {
@@ -657,27 +688,250 @@ def normalize_expression_duration(action_data):
 # Qwen does not always choose set_expression even when an emotional reaction
 # is obvious. This lightweight fallback gives BMO a face on ordinary replies
 # without requiring a second LLM call.
-def infer_expression_from_text(user_text: str, assistant_text: str):
+def infer_expression_from_text(
+    user_text: str,
+    assistant_text: str,
+):
+    """
+    Lightweight contextual expression fallback.
+
+    Explicit model-requested set_expression actions still take priority.
+    This only adds personality when the model returned ordinary speech
+    without choosing a face itself.
+    """
+    user = str(
+        user_text or ""
+    ).lower()
+
+    assistant = str(
+        assistant_text or ""
+    ).lower()
+
     combined = (
-        f"{user_text} {assistant_text}"
-        .lower()
+        f"{user} {assistant}"
     )
 
-    happy_patterns = (
-        "awesome",
-        "amazing",
-        "great news",
-        "good news",
-        "yay",
-        "woohoo",
-        "congrats",
-        "congratulations",
-        "fixed it",
-        "it works",
-        "worked!",
+
+    def contains_any(
+        patterns,
+    ):
+        return any(
+            pattern in combined
+            for pattern in patterns
+        )
+
+
+    # ---------------------------------------------------------
+    # Affection
+    # ---------------------------------------------------------
+
+    heart_patterns = (
+        "i love you",
+        "love you bmo",
+        "i love bmo",
+        "you're adorable",
+        "you are adorable",
+        "you're cute",
+        "you are cute",
+        "you're the best",
+        "you are the best",
+        "aww bmo",
+        "aw bmo",
+        "so sweet",
+        "that's so sweet",
+        "that is so sweet",
         "love that",
-        "nice!",
+        "sending you a hug",
+        "give you a hug",
+        "hug you",
     )
+
+    if contains_any(
+        heart_patterns
+    ):
+        return {
+            "type": "set_expression",
+            "expression": "heart",
+            "duration_ms": 4000,
+        }
+
+
+    # ---------------------------------------------------------
+    # Secrets / quiet
+    # ---------------------------------------------------------
+
+    shhh_patterns = (
+        "shhh",
+        "shh",
+        "keep this secret",
+        "keep it secret",
+        "don't tell anyone",
+        "do not tell anyone",
+        "between you and me",
+        "secret",
+        "be quiet",
+        "quiet please",
+        "whisper",
+    )
+
+    if contains_any(
+        shhh_patterns
+    ):
+        return {
+            "type": "set_expression",
+            "expression": "shhh",
+            "duration_ms": 3500,
+        }
+
+
+    # ---------------------------------------------------------
+    # Music / dancing
+    # ---------------------------------------------------------
+
+    jamming_patterns = (
+        "play some music",
+        "play music",
+        "sing a song",
+        "sing something",
+        "dance",
+        "dancing",
+        "jam",
+        "jamming",
+        "chiptune",
+        "music time",
+    )
+
+    if contains_any(
+        jamming_patterns
+    ):
+        return {
+            "type": "set_expression",
+            "expression": "jamming",
+            "duration_ms": 4000,
+        }
+
+
+    # ---------------------------------------------------------
+    # Surprise / shock
+    # ---------------------------------------------------------
+
+    surprised_patterns = (
+        "boo!",
+        "what?!",
+        "no way",
+        "seriously?!",
+        "surprise",
+        "shocked",
+        "unexpected",
+        "wait, what",
+        "wait what",
+        "oh wow",
+        "whoa",
+        "woah",
+    )
+
+    if contains_any(
+        surprised_patterns
+    ):
+        return {
+            "type": "set_expression",
+            "expression": "surprised",
+            "duration_ms": 3000,
+        }
+
+
+    # ---------------------------------------------------------
+    # Confusion
+    # ---------------------------------------------------------
+
+    confused_patterns = (
+        "i'm confused",
+        "i am confused",
+        "that makes no sense",
+        "doesn't make sense",
+        "does not make sense",
+        "what do you mean",
+        "huh?",
+        "huh ",
+        "wait a second",
+        "i don't understand",
+        "i do not understand",
+        "contradiction",
+        "contradictory",
+        "confusing",
+        "that's weird",
+        "that is weird",
+    )
+
+    if contains_any(
+        confused_patterns
+    ):
+        return {
+            "type": "set_expression",
+            "expression": "confused",
+            "duration_ms": 3500,
+        }
+
+
+    # ---------------------------------------------------------
+    # Playful / cheeky
+    # ---------------------------------------------------------
+
+    cheeky_patterns = (
+        "hehe",
+        "heh heh",
+        "wink",
+        "sneaky",
+        "mischief",
+        "mischievous",
+        "gotcha",
+        "just kidding",
+        "kidding!",
+        "teasing",
+        "cheeky",
+        "smug",
+    )
+
+    if contains_any(
+        cheeky_patterns
+    ):
+        return {
+            "type": "set_expression",
+            "expression": "cheeky",
+            "duration_ms": 3000,
+        }
+
+
+    # ---------------------------------------------------------
+    # Anger
+    # ---------------------------------------------------------
+
+    angry_patterns = (
+        "furious",
+        "angry",
+        "so annoying",
+        "that's annoying",
+        "that is annoying",
+        "hate this",
+        "ridiculous",
+        "infuriating",
+        "unacceptable",
+        "mad at",
+    )
+
+    if contains_any(
+        angry_patterns
+    ):
+        return {
+            "type": "set_expression",
+            "expression": "angry",
+            "duration_ms": 3000,
+        }
+
+
+    # ---------------------------------------------------------
+    # Sadness
+    # ---------------------------------------------------------
 
     sad_patterns = (
         "dropped my sandwich",
@@ -693,26 +947,56 @@ def infer_expression_from_text(user_text: str, assistant_text: str):
         "died",
         "failed",
         "hurt",
+        "upset",
+        "crying",
     )
 
-    surprised_patterns = (
-        "boo!",
-        "what?!",
-        "no way",
-        "seriously?!",
-        "surprise",
-        "shocked",
-        "unexpected",
+    if contains_any(
+        sad_patterns
+    ):
+        return {
+            "type": "set_expression",
+            "expression": "sad",
+            "duration_ms": 3200,
+        }
+
+
+    # ---------------------------------------------------------
+    # Happiness
+    # ---------------------------------------------------------
+
+    happy_patterns = (
+        "awesome",
+        "amazing",
+        "great news",
+        "good news",
+        "yay",
+        "woohoo",
+        "congrats",
+        "congratulations",
+        "fixed it",
+        "it works",
+        "worked!",
+        "nice!",
+        "excellent",
+        "wonderful",
+        "fantastic",
+        "success",
     )
 
-    angry_patterns = (
-        "furious",
-        "angry",
-        "so annoying",
-        "hate this",
-        "ridiculous",
-        "infuriating",
-    )
+    if contains_any(
+        happy_patterns
+    ):
+        return {
+            "type": "set_expression",
+            "expression": "happy",
+            "duration_ms": 3000,
+        }
+
+
+    # ---------------------------------------------------------
+    # Sleepiness
+    # ---------------------------------------------------------
 
     sleepy_patterns = (
         "sleepy",
@@ -721,75 +1005,89 @@ def infer_expression_from_text(user_text: str, assistant_text: str):
         "going to bed",
         "good night",
         "goodnight",
+        "need sleep",
+        "bedtime",
     )
 
-    daydream_patterns = (
-        "wonder",
-        "imagine",
-        "daydream",
-        "what if",
-        "dream about",
-    )
-
-    if any(
-        pattern in combined
-        for pattern in surprised_patterns
-    ):
-        return {
-            "type": "set_expression",
-            "expression": "surprised",
-            "duration_ms": 3000,
-        }
-
-    if any(
-        pattern in combined
-        for pattern in angry_patterns
-    ):
-        return {
-            "type": "set_expression",
-            "expression": "angry",
-            "duration_ms": 3000,
-        }
-
-    if any(
-        pattern in combined
-        for pattern in sad_patterns
-    ):
-        return {
-            "type": "set_expression",
-            "expression": "sad",
-            "duration_ms": 3000,
-        }
-
-    if any(
-        pattern in combined
-        for pattern in happy_patterns
-    ):
-        return {
-            "type": "set_expression",
-            "expression": "happy",
-            "duration_ms": 3000,
-        }
-
-    if any(
-        pattern in combined
-        for pattern in sleepy_patterns
+    if contains_any(
+        sleepy_patterns
     ):
         return {
             "type": "set_expression",
             "expression": "sleepy",
-            "duration_ms": 3000,
+            "duration_ms": 3500,
         }
 
-    if any(
-        pattern in combined
-        for pattern in daydream_patterns
+
+    # ---------------------------------------------------------
+    # Dreaming / imagining
+    # ---------------------------------------------------------
+
+    daydream_patterns = (
+        "imagine",
+        "daydream",
+        "what if",
+        "dream about",
+        "wonder what",
+        "i wonder",
+        "picture this",
+    )
+
+    if contains_any(
+        daydream_patterns
     ):
         return {
             "type": "set_expression",
             "expression": "daydream",
-            "duration_ms": 3000,
+            "duration_ms": 3500,
         }
+
+
+    # ---------------------------------------------------------
+    # Curiosity
+    # ---------------------------------------------------------
+    #
+    # Do this fairly late so a question such as
+    # "Are you angry?" does not automatically become curious if a more
+    # meaningful emotion already matched above.
+    #
+
+    curiosity_patterns = (
+        "i'm curious",
+        "i am curious",
+        "interesting",
+        "that's interesting",
+        "that is interesting",
+        "tell me more",
+        "how does",
+        "how do",
+        "why does",
+        "why do",
+        "what happens if",
+        "what would happen",
+    )
+
+    looks_like_question = (
+        "?" in user_text
+        and len(
+            str(
+                user_text or ""
+            )
+        ) > 8
+    )
+
+    if (
+        contains_any(
+            curiosity_patterns
+        )
+        or looks_like_question
+    ):
+        return {
+            "type": "set_expression",
+            "expression": "curious",
+            "duration_ms": 2800,
+        }
+
 
     return None
 
@@ -1035,6 +1333,234 @@ def get_timer_events():
     }
 
 
+# ---------------------------------------------------------------------------
+# Deterministic Android network-state routing
+# ---------------------------------------------------------------------------
+
+NETWORK_WIFI_PATTERNS = (
+    "are you connected to wifi",
+    "are you connected to wi-fi",
+    "are you on wifi",
+    "are you on wi-fi",
+    "do you have wifi",
+    "do you have wi-fi",
+)
+
+NETWORK_TYPE_PATTERNS = (
+    "what network are you on",
+    "what kind of network are you on",
+    "what connection are you using",
+    "are you using wifi",
+    "are you using mobile data",
+    "are you on mobile data",
+)
+
+NETWORK_CONNECTED_PATTERNS = (
+    "are you connected",
+    "do you have a network connection",
+    "do you have network",
+    "are you online",
+)
+
+
+def get_network_request_kind(text):
+    normalized = (
+        str(text or "")
+        .strip()
+        .lower()
+    )
+
+    if any(
+        pattern in normalized
+        for pattern in NETWORK_WIFI_PATTERNS
+    ):
+        return "wifi"
+
+    if any(
+        pattern in normalized
+        for pattern in NETWORK_TYPE_PATTERNS
+    ):
+        return "type"
+
+    if any(
+        pattern in normalized
+        for pattern in NETWORK_CONNECTED_PATTERNS
+    ):
+        return "connected"
+
+    return None
+
+
+def format_network_response(
+    request_kind,
+    connected,
+    network_type,
+):
+    network_type = (
+        str(network_type or "none")
+        .strip()
+        .lower()
+    )
+
+    if request_kind == "wifi":
+        if (
+            connected and
+            network_type == "wifi"
+        ):
+            return (
+                "Yep, I'm connected to Wi-Fi."
+            )
+
+        if connected:
+            return (
+                "Nope, I'm connected, but not through Wi-Fi."
+            )
+
+        return (
+            "Nope, I don't have a network connection right now."
+        )
+
+    if request_kind == "type":
+        if not connected:
+            return (
+                "I don't have a network connection right now."
+            )
+
+        names = {
+            "wifi": "Wi-Fi",
+            "mobile": "mobile data",
+            "ethernet": "Ethernet",
+            "other": "another kind of network",
+        }
+
+        readable = names.get(
+            network_type,
+            "another kind of network",
+        )
+
+        return (
+            f"I'm connected through {readable}."
+        )
+
+    if connected:
+        return (
+            "Yep, I have a network connection."
+        )
+
+    return (
+        "Nope, I don't have a network connection right now."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Deterministic Android device-state routing
+# ---------------------------------------------------------------------------
+# Device-awareness questions are decided by the Mac, but the actual state comes
+# from the native Android body. Qwen never invents battery information.
+BATTERY_PERCENT_PATTERNS = (
+    "how much battery",
+    "battery percentage",
+    "battery percent",
+    "battery level",
+    "how full is your battery",
+    "what's your battery at",
+    "what is your battery at",
+)
+
+BATTERY_CHARGING_PATTERNS = (
+    "are you charging",
+    "are you plugged in",
+    "are you plugged-in",
+    "are you on charge",
+    "are you connected to power",
+    "are you connected to a charger",
+    "are you charging right now",
+)
+
+
+def get_battery_request_kind(text):
+    normalized = (
+        str(text or "")
+        .strip()
+        .lower()
+    )
+
+    wants_percent = any(
+        pattern in normalized
+        for pattern in BATTERY_PERCENT_PATTERNS
+    )
+
+    wants_charging = any(
+        pattern in normalized
+        for pattern in BATTERY_CHARGING_PATTERNS
+    )
+
+    # A broad "battery status" question naturally asks for both.
+    if (
+        "battery status" in normalized
+        or "how is your battery" in normalized
+        or "how's your battery" in normalized
+    ):
+        wants_percent = True
+        wants_charging = True
+
+    if wants_percent and wants_charging:
+        return "both"
+
+    if wants_percent:
+        return "percent"
+
+    if wants_charging:
+        return "charging"
+
+    return None
+
+
+def format_battery_response(
+    request_kind: str,
+    battery_percent: int,
+    charging: bool,
+):
+    percent = max(
+        0,
+        min(
+            100,
+            int(
+                battery_percent
+            ),
+        ),
+    )
+
+    if request_kind == "percent":
+        if charging:
+            return (
+                f"I'm at {percent} percent, and I'm charging."
+            )
+
+        return (
+            f"I'm at {percent} percent."
+        )
+
+    if request_kind == "charging":
+        if charging:
+            return (
+                "Yep, I'm charging right now."
+            )
+
+        return (
+            "Nope, I'm not charging right now."
+        )
+
+    if charging:
+        return (
+            f"I'm at {percent} percent, and I'm charging."
+        )
+
+    return (
+        f"I'm at {percent} percent, and I'm not charging."
+    )
+
+
 VISION_REQUEST_PATTERNS = (
     "what are you looking at",
     "what do you see",
@@ -1126,6 +1652,78 @@ def chat(request: ChatRequest, background_tasks: BackgroundTasks):
             "audio_url": audio_url,
             "action": {
                 "type": "memory_cleared",
+            },
+        }
+
+    # ------------------------------------------------------------------
+    # Deterministic Android network-state routing
+    # ------------------------------------------------------------------
+    network_request_kind = get_network_request_kind(
+        user_text
+    )
+
+    if network_request_kind:
+        response_history = save_android_memory(
+            list(
+                persistent_history
+            ) + [
+                {
+                    "role": "user",
+                    "content": user_text,
+                }
+            ]
+        )
+
+        logger.info(
+            "Deterministic Android network request: %r -> %s",
+            user_text,
+            network_request_kind,
+        )
+
+        return {
+            "response": "",
+            "history": response_history,
+            "audio_url": None,
+            "action": {
+                "type": "get_device_network",
+                "message": user_text,
+                "request_kind": network_request_kind,
+            },
+        }
+
+    # ------------------------------------------------------------------
+    # Deterministic Android battery / charging routing
+    # ------------------------------------------------------------------
+    battery_request_kind = get_battery_request_kind(
+        user_text
+    )
+
+    if battery_request_kind:
+        response_history = save_android_memory(
+            list(
+                persistent_history
+            ) + [
+                {
+                    "role": "user",
+                    "content": user_text,
+                }
+            ]
+        )
+
+        logger.info(
+            "Deterministic Android battery request: %r -> %s",
+            user_text,
+            battery_request_kind,
+        )
+
+        return {
+            "response": "",
+            "history": response_history,
+            "audio_url": None,
+            "action": {
+                "type": "get_device_battery",
+                "message": user_text,
+                "request_kind": battery_request_kind,
             },
         }
 
@@ -1554,6 +2152,192 @@ def clear_android_memory_endpoint():
 
     return {
         "status": "cleared",
+    }
+
+
+@app.post("/api/device-network")
+def device_network(
+    request: DeviceNetworkRequest,
+    background_tasks: BackgroundTasks,
+):
+    user_text = str(
+        request.message or ""
+    ).strip()
+
+    request_kind = (
+        get_network_request_kind(
+            user_text
+        )
+        or "connected"
+    )
+
+    response_text = format_network_response(
+        request_kind,
+        request.connected,
+        request.network_type,
+    )
+
+    current_history = load_android_memory()
+
+    updated_history = list(
+        current_history
+    )
+
+    if not (
+        updated_history
+        and isinstance(
+            updated_history[-1],
+            dict,
+        )
+        and updated_history[-1].get("role") == "user"
+        and str(
+            updated_history[-1].get(
+                "content",
+                "",
+            )
+        ).strip() == user_text
+    ):
+        if user_text:
+            updated_history.append(
+                {
+                    "role": "user",
+                    "content": user_text,
+                }
+            )
+
+    updated_history.append(
+        {
+            "role": "assistant",
+            "content": response_text,
+        }
+    )
+
+    updated_history = save_android_memory(
+        updated_history
+    )
+
+    tts_content = (
+        clean_text_for_speech(
+            response_text
+        )
+        or response_text
+    )
+
+    background_tasks.add_task(
+        _cleanup_old_audio
+    )
+
+    filename = (
+        f"response_{uuid.uuid4().hex[:8]}.wav"
+    )
+
+    audio_url = generate_audio_file(
+        tts_content,
+        filename,
+    )
+
+    return {
+        "response": response_text,
+        "history": updated_history,
+        "audio_url": audio_url,
+        "action": None,
+    }
+
+
+@app.post("/api/device-battery")
+def device_battery(
+    request: DeviceBatteryRequest,
+    background_tasks: BackgroundTasks,
+):
+    """
+    Turn native Android battery state into a deterministic spoken BMO reply.
+
+    /api/chat stores the user's device-state question before asking the client
+    for native state. This endpoint appends only the assistant answer.
+    """
+    user_text = str(
+        request.message or ""
+    ).strip()
+
+    request_kind = (
+        get_battery_request_kind(
+            user_text
+        )
+        or "both"
+    )
+
+    response_text = format_battery_response(
+        request_kind,
+        request.battery_percent,
+        request.charging,
+    )
+
+    current_history = load_android_memory()
+
+    updated_history = list(
+        current_history
+    )
+
+    # The /api/chat battery route already appended the user question.
+    # If this endpoint is called manually, keep memory coherent anyway.
+    if not (
+        updated_history
+        and isinstance(
+            updated_history[-1],
+            dict,
+        )
+        and updated_history[-1].get("role") == "user"
+        and str(
+            updated_history[-1].get(
+                "content",
+                "",
+            )
+        ).strip() == user_text
+    ):
+        if user_text:
+            updated_history.append(
+                {
+                    "role": "user",
+                    "content": user_text,
+                }
+            )
+
+    updated_history.append(
+        {
+            "role": "assistant",
+            "content": response_text,
+        }
+    )
+
+    updated_history = save_android_memory(
+        updated_history
+    )
+
+    tts_content = (
+        clean_text_for_speech(
+            response_text
+        )
+        or response_text
+    )
+
+    background_tasks.add_task(
+        _cleanup_old_audio
+    )
+
+    filename = (
+        f"response_{uuid.uuid4().hex[:8]}.wav"
+    )
+
+    audio_url = generate_audio_file(
+        tts_content,
+        filename,
+    )
+
+    return {
+        "response": response_text,
+        "history": updated_history,
+        "audio_url": audio_url,
+        "action": None,
     }
 
 
