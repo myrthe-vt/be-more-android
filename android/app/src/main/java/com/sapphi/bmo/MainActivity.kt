@@ -2,6 +2,9 @@ package com.sapphi.bmo
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.view.Surface
+import android.graphics.SurfaceTexture
+import android.hardware.Camera
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
@@ -45,6 +48,9 @@ class MainActivity : AppCompatActivity() {
             "BMO_WAKE"
         private const val AUDIO_PERMISSION_REQUEST =
             1001
+
+        private const val CAMERA_PERMISSION_REQUEST =
+            1002
 
         private const val RETRY_DELAY_MS =
             4000L
@@ -111,6 +117,23 @@ class MainActivity : AppCompatActivity() {
 
     private var startAfterPermission =
         false
+
+
+    /*
+     * Native camera / vision state
+     */
+
+    private var visionCamera: Camera? =
+        null
+
+    private var visionPreviewTexture: SurfaceTexture? =
+        null
+
+    private var visionInProgress =
+        false
+
+    private var pendingVisionPrompt: String? =
+        null
 
 
     /*
@@ -1318,6 +1341,518 @@ class MainActivity : AppCompatActivity() {
                 stopNativeRecording()
             }
         }
+
+
+        @JavascriptInterface
+        fun captureImage(
+            prompt: String
+        ) {
+            runOnUiThread {
+                startNativeVisionCapture(
+                    prompt
+                )
+            }
+        }
+    }
+
+
+    /*
+     * =====================================================================
+     * Native rear camera / vision
+     * =====================================================================
+     */
+
+    private fun getRearCameraId(): Int {
+        val info =
+            Camera.CameraInfo()
+
+        for (
+        cameraId in
+        0 until Camera.getNumberOfCameras()
+        ) {
+            Camera.getCameraInfo(
+                cameraId,
+                info
+            )
+
+            if (
+                info.facing ==
+                Camera.CameraInfo.CAMERA_FACING_BACK
+            ) {
+                return cameraId
+            }
+        }
+
+        return 0
+    }
+
+
+    private fun getCameraJpegRotation(
+        cameraId: Int
+    ): Int {
+        val info =
+            Camera.CameraInfo()
+
+        Camera.getCameraInfo(
+            cameraId,
+            info
+        )
+
+        @Suppress(
+            "DEPRECATION"
+        )
+        val displayRotation =
+            windowManager
+                .defaultDisplay
+                .rotation
+
+        val degrees =
+            when (
+                displayRotation
+            ) {
+                Surface.ROTATION_90 ->
+                    90
+
+                Surface.ROTATION_180 ->
+                    180
+
+                Surface.ROTATION_270 ->
+                    270
+
+                else ->
+                    0
+            }
+
+        return (
+                info.orientation -
+                        degrees +
+                        360
+                ) % 360
+    }
+
+
+    private fun startNativeVisionCapture(
+        prompt: String
+    ) {
+        if (
+            visionInProgress
+        ) {
+            return
+        }
+
+        if (
+            ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.CAMERA
+            ) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            pendingVisionPrompt =
+                prompt
+
+            ActivityCompat.requestPermissions(
+                this,
+                arrayOf(
+                    Manifest.permission.CAMERA
+                ),
+                CAMERA_PERMISSION_REQUEST
+            )
+
+            return
+        }
+
+        visionInProgress =
+            true
+
+        pendingVisionPrompt =
+            null
+
+        stopWakeWordSystem()
+
+        notifyJavascriptVisionStarted()
+
+        Log.i(
+            WAKE_LOG,
+            "Opening rear camera for BMO vision"
+        )
+
+        try {
+            val cameraId =
+                getRearCameraId()
+
+            val camera =
+                Camera.open(
+                    cameraId
+                )
+
+            visionCamera =
+                camera
+
+            val parameters =
+                camera.parameters
+
+            val sizes =
+                parameters.supportedPictureSizes
+
+            val preferredSize =
+                sizes
+                    ?.filter {
+                        it.width <= 1920 &&
+                                it.height <= 1440
+                    }
+                    ?.maxByOrNull {
+                        it.width * it.height
+                    }
+                    ?: sizes
+                        ?.maxByOrNull {
+                            it.width * it.height
+                        }
+
+            if (
+                preferredSize != null
+            ) {
+                parameters.setPictureSize(
+                    preferredSize.width,
+                    preferredSize.height
+                )
+            }
+
+            parameters.jpegQuality =
+                85
+
+            parameters.setRotation(
+                getCameraJpegRotation(
+                    cameraId
+                )
+            )
+
+            camera.parameters =
+                parameters
+
+            visionPreviewTexture =
+                SurfaceTexture(
+                    10
+                )
+
+            camera.setPreviewTexture(
+                visionPreviewTexture
+            )
+
+            camera.startPreview()
+
+            mainHandler.postDelayed(
+                {
+                    val activeCamera =
+                        visionCamera
+
+                    if (
+                        activeCamera == null ||
+                        !visionInProgress
+                    ) {
+                        return@postDelayed
+                    }
+
+                    try {
+                        activeCamera.autoFocus {
+                                _,
+                                focusedCamera ->
+
+                            takeVisionPicture(
+                                focusedCamera,
+                                prompt
+                            )
+                        }
+
+                    } catch (
+                        _: Exception
+                    ) {
+                        takeVisionPicture(
+                            activeCamera,
+                            prompt
+                        )
+                    }
+                },
+                700L
+            )
+
+        } catch (
+            exception: Exception
+        ) {
+            Log.e(
+                WAKE_LOG,
+                "Camera capture failed to start",
+                exception
+            )
+
+            releaseVisionCamera()
+
+            visionInProgress =
+                false
+
+            notifyJavascriptVisionError(
+                "Camera failed to start"
+            )
+
+            rearmWakeWord(
+                1500L
+            )
+        }
+    }
+
+
+    private fun takeVisionPicture(
+        camera: Camera,
+        prompt: String
+    ) {
+        try {
+            camera.takePicture(
+                null,
+                null,
+                Camera.PictureCallback {
+                        data,
+                        _ ->
+
+                    Log.i(
+                        WAKE_LOG,
+                        "Camera image captured: ${data.size} bytes"
+                    )
+
+                    releaseVisionCamera()
+
+                    uploadVisionImage(
+                        data,
+                        prompt
+                    )
+                }
+            )
+
+        } catch (
+            exception: Exception
+        ) {
+            Log.e(
+                WAKE_LOG,
+                "takePicture failed",
+                exception
+            )
+
+            releaseVisionCamera()
+
+            visionInProgress =
+                false
+
+            notifyJavascriptVisionError(
+                "Camera capture failed"
+            )
+
+            rearmWakeWord(
+                1500L
+            )
+        }
+    }
+
+
+    private fun releaseVisionCamera() {
+        try {
+            visionCamera
+                ?.stopPreview()
+
+        } catch (
+            _: Exception
+        ) {
+        }
+
+        try {
+            visionCamera
+                ?.release()
+
+        } catch (
+            _: Exception
+        ) {
+        }
+
+        visionCamera =
+            null
+
+        try {
+            visionPreviewTexture
+                ?.release()
+
+        } catch (
+            _: Exception
+        ) {
+        }
+
+        visionPreviewTexture =
+            null
+    }
+
+
+    private fun uploadVisionImage(
+        jpegData: ByteArray,
+        prompt: String
+    ) {
+        Thread {
+            try {
+                val responseText =
+                    postImageForVision(
+                        jpegData,
+                        prompt
+                    )
+
+                runOnUiThread {
+                    visionInProgress =
+                        false
+
+                    notifyJavascriptVisionResponse(
+                        responseText
+                    )
+
+                    rearmWakeWord(
+                        1500L
+                    )
+                }
+
+            } catch (
+                exception: Exception
+            ) {
+                Log.e(
+                    WAKE_LOG,
+                    "Vision upload failed",
+                    exception
+                )
+
+                runOnUiThread {
+                    visionInProgress =
+                        false
+
+                    notifyJavascriptVisionError(
+                        "Vision analysis failed"
+                    )
+
+                    rearmWakeWord(
+                        2000L
+                    )
+                }
+            }
+        }.start()
+    }
+
+
+    private fun postImageForVision(
+        jpegData: ByteArray,
+        prompt: String
+    ): String {
+        val boundary =
+            "----BMOVision${UUID.randomUUID()}"
+
+        val connection =
+            URL(
+                "$BMO_BASE_URL/api/vision"
+            ).openConnection()
+                    as HttpURLConnection
+
+        connection.requestMethod =
+            "POST"
+
+        connection.doInput =
+            true
+
+        connection.doOutput =
+            true
+
+        connection.connectTimeout =
+            30000
+
+        connection.readTimeout =
+            180000
+
+        connection.setRequestProperty(
+            "Content-Type",
+            "multipart/form-data; boundary=$boundary"
+        )
+
+        DataOutputStream(
+            connection.outputStream
+        ).use { output ->
+            output.writeBytes(
+                "--$boundary\r\n"
+            )
+
+            output.writeBytes(
+                "Content-Disposition: form-data; " +
+                        "name=\"prompt\"\r\n\r\n"
+            )
+
+            output.write(
+                prompt.toByteArray(
+                    Charsets.UTF_8
+                )
+            )
+
+            output.writeBytes(
+                "\r\n"
+            )
+
+            output.writeBytes(
+                "--$boundary\r\n"
+            )
+
+            output.writeBytes(
+                "Content-Disposition: form-data; " +
+                        "name=\"image\"; " +
+                        "filename=\"bmo-camera.jpg\"\r\n"
+            )
+
+            output.writeBytes(
+                "Content-Type: image/jpeg\r\n\r\n"
+            )
+
+            output.write(
+                jpegData
+            )
+
+            output.writeBytes(
+                "\r\n--$boundary--\r\n"
+            )
+
+            output.flush()
+        }
+
+        val responseCode =
+            connection.responseCode
+
+        val responseStream =
+            if (
+                responseCode in 200..299
+            ) {
+                connection.inputStream
+
+            } else {
+                connection.errorStream
+            }
+
+        val responseText =
+            BufferedReader(
+                InputStreamReader(
+                    responseStream
+                )
+            ).use { reader ->
+                reader.readText()
+            }
+
+        connection.disconnect()
+
+        if (
+            responseCode !in 200..299
+        ) {
+            throw RuntimeException(
+                "Vision HTTP " +
+                        "$responseCode: " +
+                        responseText
+            )
+        }
+
+        return responseText
     }
 
 
@@ -1823,6 +2358,62 @@ class MainActivity : AppCompatActivity() {
      * =====================================================================
      */
 
+    private fun notifyJavascriptVisionStarted() {
+        evaluateJavascript(
+            """
+        if (
+            window.onNativeVisionStarted
+        ) {
+            window.onNativeVisionStarted();
+        }
+        """.trimIndent()
+        )
+    }
+
+
+    private fun notifyJavascriptVisionResponse(
+        responseText: String
+    ) {
+        val quotedResponse =
+            JSONObject.quote(
+                responseText
+            )
+
+        evaluateJavascript(
+            """
+        if (
+            window.onNativeVisionResponse
+        ) {
+            window.onNativeVisionResponse(
+                $quotedResponse
+            );
+        }
+        """.trimIndent()
+        )
+    }
+
+
+    private fun notifyJavascriptVisionError(
+        message: String
+    ) {
+        val quotedMessage =
+            JSONObject.quote(
+                message
+            )
+
+        evaluateJavascript(
+            """
+        if (
+            window.onNativeVisionError
+        ) {
+            window.onNativeVisionError(
+                $quotedMessage
+            );
+        }
+        """.trimIndent()
+        )
+    }
+
     override fun onRequestPermissionsResult(
         requestCode: Int,
         permissions:
@@ -1871,6 +2462,43 @@ class MainActivity : AppCompatActivity() {
                 granted &&
                 !isRecording
             ) {
+                rearmWakeWord(
+                    1000L
+                )
+            }
+        }
+
+        if (
+            requestCode ==
+            CAMERA_PERMISSION_REQUEST
+        ) {
+            val granted =
+                grantResults.isNotEmpty() &&
+                        grantResults[0] ==
+                        PackageManager.PERMISSION_GRANTED
+
+            val prompt =
+                pendingVisionPrompt
+
+            pendingVisionPrompt =
+                null
+
+            if (
+                granted &&
+                prompt != null
+            ) {
+                startNativeVisionCapture(
+                    prompt
+                )
+
+            } else {
+                visionInProgress =
+                    false
+
+                notifyJavascriptVisionError(
+                    "Camera permission denied"
+                )
+
                 rearmWakeWord(
                     1000L
                 )
@@ -1937,6 +2565,15 @@ class MainActivity : AppCompatActivity() {
     override fun onPause() {
         stopWakeWordSystem()
 
+        if (
+            visionInProgress
+        ) {
+            releaseVisionCamera()
+
+            visionInProgress =
+                false
+        }
+
         super.onPause()
     }
 
@@ -1947,6 +2584,8 @@ class MainActivity : AppCompatActivity() {
         )
 
         stopWakeWordSystem()
+
+        releaseVisionCamera()
 
         if (
             isRecording
