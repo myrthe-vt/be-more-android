@@ -1,10 +1,11 @@
 package com.sapphi.bmo
 
 import android.Manifest
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
-import android.view.Surface
 import android.graphics.SurfaceTexture
 import android.hardware.Camera
 import android.media.AudioFormat
@@ -15,9 +16,12 @@ import android.os.BatteryManager
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.view.Surface
 import android.view.View
 import android.view.WindowManager
 import android.webkit.JavascriptInterface
+import android.webkit.WebResourceError
+import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -50,6 +54,7 @@ class MainActivity : AppCompatActivity() {
 
         private const val WAKE_LOG =
             "BMO_WAKE"
+
         private const val AUDIO_PERMISSION_REQUEST =
             1001
 
@@ -58,6 +63,12 @@ class MainActivity : AppCompatActivity() {
 
         private const val RETRY_DELAY_MS =
             4000L
+
+        private const val WEBVIEW_WATCHDOG_INTERVAL_MS =
+            15000L
+
+        private const val WEBVIEW_RECOVERY_COOLDOWN_MS =
+            20000L
 
         private const val BMO_BASE_URL =
             "http://bmo-backend.example:8000"
@@ -74,25 +85,12 @@ class MainActivity : AppCompatActivity() {
         private const val WAKEWORD_URL =
             "ws://bmo-backend.example:8000/api/wakeword"
 
-        /*
-         * OpenWakeWord expects 16 kHz mono 16-bit PCM.
-         *
-         * Your Mac-side code works with 1280-sample chunks,
-         * which represent 80 ms of audio at 16 kHz.
-         */
         private const val WAKE_SAMPLE_RATE =
             16000
 
         private const val WAKE_CHUNK_SAMPLES =
             1280
 
-        /*
-         * After "Hey BMO" is detected, switch from the passive
-         * AudioRecord wake-word stream to the normal MediaRecorder
-         * command microphone. Record for this long, then submit the
-         * captured audio through the existing transcription/chat/TTS
-         * pipeline exactly like releasing push-to-talk.
-         */
         private const val WAKE_COMMAND_RECORD_MS =
             6000L
     }
@@ -153,6 +151,9 @@ class MainActivity : AppCompatActivity() {
     private var bmoPageReady =
         false
 
+    private var lastWebViewRecoveryAt =
+        0L
+
 
     /*
      * Wake-word audio state
@@ -183,20 +184,10 @@ class MainActivity : AppCompatActivity() {
     private var wakeSocketConnected =
         false
 
-    /*
-     * Passive wake-word listening should normally recover by itself
-     * when the Mac backend or wake WebSocket disappears.
-     *
-     * This flag is disabled only for intentional wake-system shutdowns
-     * such as push-to-talk, vision capture, Activity pause/destroy, etc.
-     */
     @Volatile
     private var wakeAutoReconnectEnabled =
         false
 
-    /*
-     * Keep at most one delayed wake reconnect scheduled at a time.
-     */
     private var wakeRearmRunnable: Runnable? =
         null
 
@@ -220,6 +211,63 @@ class MainActivity : AppCompatActivity() {
 
             override fun run() {
                 checkBackendAndUpdateUi()
+            }
+        }
+
+
+    private val webViewWatchdogRunnable =
+        object : Runnable {
+
+            override fun run() {
+                runWebViewWatchdog()
+
+                mainHandler.postDelayed(
+                    this,
+                    WEBVIEW_WATCHDOG_INTERVAL_MS
+                )
+            }
+        }
+
+
+    private val connectivityReceiver =
+        object : BroadcastReceiver() {
+
+            override fun onReceive(
+                context: Context?,
+                intent: Intent?
+            ) {
+                Log.i(
+                    WAKE_LOG,
+                    "Android connectivity changed"
+                )
+
+                if (
+                    isNetworkConnected()
+                ) {
+                    Log.i(
+                        WAKE_LOG,
+                        "Network available; checking BMO backend"
+                    )
+
+                    checkBackendAndUpdateUi()
+
+                    if (
+                        bmoPageReady &&
+                        !isRecording
+                    ) {
+                        rearmWakeWord(
+                            1500L
+                        )
+                    }
+
+                } else {
+                    Log.i(
+                        WAKE_LOG,
+                        "Network unavailable"
+                    )
+
+                    stopWakeWordSystem()
+                }
             }
         }
 
@@ -253,21 +301,22 @@ class MainActivity : AppCompatActivity() {
 
         setupWebView()
 
-        /*
-         * Drop any stale HTML/JavaScript cached by the old Android WebView.
-         * This is especially important while face.js is under active
-         * development.
-         */
         webView.clearCache(
             true
         )
 
-        /*
-         * Always verify the Mac before loading the remote BMO page.
-         */
         showConnectingPage()
 
         checkBackendAndUpdateUi()
+
+        mainHandler.removeCallbacks(
+            webViewWatchdogRunnable
+        )
+
+        mainHandler.postDelayed(
+            webViewWatchdogRunnable,
+            WEBVIEW_WATCHDOG_INTERVAL_MS
+        )
     }
 
 
@@ -293,23 +342,52 @@ class MainActivity : AppCompatActivity() {
                         "WebView finished: $url"
                     )
 
-                    /*
-                     * LG's older Android WebView does not reliably report
-                     * onPageFinished() for the remote BMO page. Keep this
-                     * callback for diagnostics only. Wake-word startup is
-                     * now driven by the successful backend health check in
-                     * showBmoPage(), so it cannot get stuck behind this
-                     * callback.
-                     */
                     if (
                         url?.startsWith(
                             BMO_BASE_URL
                         ) == true
                     ) {
+                        showingBmoPage =
+                            true
+
+                        bmoPageReady =
+                            true
+
                         Log.i(
                             WAKE_LOG,
                             "Remote BMO page reported finished"
                         )
+                    }
+                }
+
+
+                override fun onReceivedError(
+                    view: WebView?,
+                    request: WebResourceRequest?,
+                    error: WebResourceError?
+                ) {
+                    super.onReceivedError(
+                        view,
+                        request,
+                        error
+                    )
+
+                    if (
+                        request?.isForMainFrame ==
+                        true
+                    ) {
+                        Log.e(
+                            WAKE_LOG,
+                            "Main WebView load failed: ${error?.description}"
+                        )
+
+                        showingBmoPage =
+                            false
+
+                        bmoPageReady =
+                            false
+
+                        checkBackendAndUpdateUi()
                     }
                 }
             }
@@ -324,11 +402,6 @@ class MainActivity : AppCompatActivity() {
             mediaPlaybackRequiresUserGesture =
                 false
 
-            /*
-             * During development BMO's face.js changes frequently.
-             * LOAD_NO_CACHE prevents the LG G7 WebView from silently
-             * reusing an older JavaScript bundle after app/backend restarts.
-             */
             cacheMode =
                 WebSettings.LOAD_NO_CACHE
 
@@ -477,21 +550,21 @@ class MainActivity : AppCompatActivity() {
                     BMO_BASE_URL
                 ) == true
         ) {
+            if (
+                !wakeAudioRunning &&
+                !isRecording
+            ) {
+                rearmWakeWord(
+                    750L
+                )
+            }
+
             return
         }
 
         showingBmoPage =
             true
 
-        /*
-         * The backend health check already succeeded, so the native
-         * wake-word system is allowed to start independently from
-         * WebView.onPageFinished().
-         *
-         * This matters on the LG G7 / Android 8 WebView, where the
-         * remote page can load successfully without us receiving the
-         * expected onPageFinished() callback.
-         */
         bmoPageReady =
             true
 
@@ -504,11 +577,6 @@ class MainActivity : AppCompatActivity() {
             BMO_URL
         )
 
-        /*
-         * Give the WebView a short head start for the visible face and
-         * JavaScript bridge, but do not make wake-word startup depend on
-         * the page-finished callback.
-         */
         mainHandler.postDelayed(
             {
                 Log.i(
@@ -520,6 +588,101 @@ class MainActivity : AppCompatActivity() {
             },
             750L
         )
+    }
+
+
+    private fun forceReloadBmoPage(
+        reason: String
+    ) {
+        val now =
+            System.currentTimeMillis()
+
+        if (
+            now -
+            lastWebViewRecoveryAt <
+            WEBVIEW_RECOVERY_COOLDOWN_MS
+        ) {
+            return
+        }
+
+        lastWebViewRecoveryAt =
+            now
+
+        Log.w(
+            WAKE_LOG,
+            "Reloading BMO WebView: $reason"
+        )
+
+        stopWakeWordSystem()
+
+        showingBmoPage =
+            true
+
+        bmoPageReady =
+            true
+
+        webView.stopLoading()
+
+        webView.clearCache(
+            true
+        )
+
+        webView.loadUrl(
+            "$BMO_URL&recovery=$now"
+        )
+
+        mainHandler.postDelayed(
+            {
+                if (
+                    bmoPageReady &&
+                    !isRecording
+                ) {
+                    rearmWakeWord(
+                        500L
+                    )
+                }
+            },
+            1500L
+        )
+    }
+
+
+    private fun runWebViewWatchdog() {
+        if (
+            isRecording ||
+            visionInProgress
+        ) {
+            return
+        }
+
+        Thread {
+            val backendOnline =
+                isBackendOnline()
+
+            runOnUiThread {
+                if (
+                    !backendOnline
+                ) {
+                    return@runOnUiThread
+                }
+
+                val currentUrl =
+                    webView.url
+                        ?: ""
+
+                if (
+                    !showingBmoPage ||
+                    !bmoPageReady ||
+                    !currentUrl.startsWith(
+                        BMO_BASE_URL
+                    )
+                ) {
+                    forceReloadBmoPage(
+                        "watchdog found stale/non-BMO page"
+                    )
+                }
+            }
+        }.start()
     }
 
 
@@ -535,14 +698,12 @@ class MainActivity : AppCompatActivity() {
         val html =
             """
             <!doctype html>
-
             <html>
             <head>
                 <meta
                     name="viewport"
                     content="width=device-width, initial-scale=1"
                 >
-
                 <style>
                     html,
                     body {
@@ -578,7 +739,7 @@ class MainActivity : AppCompatActivity() {
             <body>
                 <div>
                     <div class="face">
-                        â€¢ _ â€¢
+                        • _ •
                     </div>
 
                     <div class="message">
@@ -611,14 +772,12 @@ class MainActivity : AppCompatActivity() {
         val html =
             """
             <!doctype html>
-
             <html>
             <head>
                 <meta
                     name="viewport"
                     content="width=device-width, initial-scale=1"
                 >
-
                 <style>
                     html,
                     body {
@@ -660,7 +819,7 @@ class MainActivity : AppCompatActivity() {
             <body>
                 <div>
                     <div class="face">
-                        â€¢ _ â€¢
+                        • _ •
                     </div>
 
                     <div class="message">
@@ -720,21 +879,13 @@ class MainActivity : AppCompatActivity() {
                 WAKE_LOG,
                 "Microphone permission missing"
             )
-            /*
-             * Push-to-talk will still ask for permission normally.
-             * We don't trigger a surprise permission dialog solely
-             * because the page loaded.
-             */
+
             return
         }
 
         wakeWordTriggered =
             false
 
-        /*
-         * From this point passive wake listening is expected to remain
-         * available. Unexpected WebSocket closure/failure should rearm it.
-         */
         wakeAutoReconnectEnabled =
             true
 
@@ -782,6 +933,13 @@ class MainActivity : AppCompatActivity() {
                         webSocket: WebSocket,
                         response: Response
                     ) {
+                        if (
+                            wakeWebSocket !==
+                            webSocket
+                        ) {
+                            return
+                        }
+
                         Log.i(
                             WAKE_LOG,
                             "WebSocket OPEN"
@@ -800,9 +958,14 @@ class MainActivity : AppCompatActivity() {
                         webSocket: WebSocket,
                         text: String
                     ) {
-                        handleWakeSocketMessage(
-                            text
-                        )
+                        if (
+                            wakeWebSocket ===
+                            webSocket
+                        ) {
+                            handleWakeSocketMessage(
+                                text
+                            )
+                        }
                     }
 
 
@@ -811,6 +974,13 @@ class MainActivity : AppCompatActivity() {
                         code: Int,
                         reason: String
                     ) {
+                        if (
+                            wakeWebSocket !==
+                            webSocket
+                        ) {
+                            return
+                        }
+
                         wakeSocketConnected =
                             false
 
@@ -826,26 +996,17 @@ class MainActivity : AppCompatActivity() {
                         code: Int,
                         reason: String
                     ) {
-                        Log.i(
-                            WAKE_LOG,
-                            "WebSocket CLOSED: code=$code reason=$reason"
-                        )
-
-                        /*
-                         * Ignore callbacks from an older socket that has
-                         * already been intentionally replaced or stopped.
-                         */
                         if (
                             wakeWebSocket !==
                             webSocket
                         ) {
-                            Log.i(
-                                WAKE_LOG,
-                                "Ignoring close from stale wake socket"
-                            )
-
                             return
                         }
+
+                        Log.i(
+                            WAKE_LOG,
+                            "WebSocket CLOSED: code=$code reason=$reason"
+                        )
 
                         wakeSocketConnected =
                             false
@@ -855,12 +1016,6 @@ class MainActivity : AppCompatActivity() {
 
                         stopWakeAudioCapture()
 
-                        /*
-                         * A Uvicorn restart may arrive here as a clean
-                         * WebSocket close instead of onFailure(). This was
-                         * the missing recovery path that left BMO unable to
-                         * hear "Hey BMO" until the Android app restarted.
-                         */
                         if (
                             wakeAutoReconnectEnabled &&
                             bmoPageReady &&
@@ -883,27 +1038,18 @@ class MainActivity : AppCompatActivity() {
                         throwable: Throwable,
                         response: Response?
                     ) {
+                        if (
+                            wakeWebSocket !==
+                            webSocket
+                        ) {
+                            return
+                        }
+
                         Log.e(
                             WAKE_LOG,
                             "WebSocket FAILED",
                             throwable
                         )
-
-                        /*
-                         * Ignore callbacks from a socket that is no longer
-                         * the active passive-listener connection.
-                         */
-                        if (
-                            wakeWebSocket !==
-                            webSocket
-                        ) {
-                            Log.i(
-                                WAKE_LOG,
-                                "Ignoring failure from stale wake socket"
-                            )
-
-                            return
-                        }
 
                         wakeSocketConnected =
                             false
@@ -970,10 +1116,6 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        /*
-         * Use several chunks of buffering so old Android audio
-         * hardware has some breathing room.
-         */
         val bufferBytes =
             maxOf(
                 minimumBuffer,
@@ -1004,6 +1146,7 @@ class MainActivity : AppCompatActivity() {
                     WAKE_LOG,
                     "AudioRecord failed to initialize"
                 )
+
                 stopWakeAudioCapture()
 
                 return
@@ -1038,9 +1181,17 @@ class MainActivity : AppCompatActivity() {
         } catch (
             exception: Exception
         ) {
-            exception.printStackTrace()
+            Log.e(
+                WAKE_LOG,
+                "AudioRecord startup failed",
+                exception
+            )
 
             stopWakeAudioCapture()
+
+            rearmWakeWord(
+                2000L
+            )
         }
     }
 
@@ -1098,11 +1249,6 @@ class MainActivity : AppCompatActivity() {
                 )
             }
 
-            /*
-             * OpenWakeWord expects a fixed-size 1280-sample
-             * chunk. If Android returns less than that, pad the
-             * remainder with silence.
-             */
             val bytes =
                 ByteBuffer
                     .allocate(
@@ -1188,7 +1334,11 @@ class MainActivity : AppCompatActivity() {
         } catch (
             exception: Exception
         ) {
-            exception.printStackTrace()
+            Log.e(
+                WAKE_LOG,
+                "Wake socket message parse failed",
+                exception
+            )
         }
     }
 
@@ -1215,11 +1365,6 @@ class MainActivity : AppCompatActivity() {
             "Wake word detected on Android: $model"
         )
 
-        /*
-         * The passive wake-word listener owns the microphone through
-         * AudioRecord. Release it before the normal MediaRecorder
-         * command capture takes over.
-         */
         stopWakeWordSystem()
 
         runOnUiThread {
@@ -1256,12 +1401,6 @@ class MainActivity : AppCompatActivity() {
                 """.trimIndent()
             )
 
-            /*
-             * Use the exact same recording pipeline as push-to-talk.
-             * Once this recorder stops, stopNativeRecording() uploads
-             * the file to /api/transcribe and face.js receives the
-             * transcript through window.onNativeTranscript().
-             */
             Log.i(
                 WAKE_LOG,
                 "Starting automatic command recording"
@@ -1269,12 +1408,6 @@ class MainActivity : AppCompatActivity() {
 
             startNativeRecording()
 
-            /*
-             * MediaRecorder needs a moment after the passive
-             * AudioRecord is released. startNativeRecording() is
-             * synchronous here, so if it succeeded isRecording will
-             * already be true.
-             */
             if (
                 !isRecording
             ) {
@@ -1312,19 +1445,6 @@ class MainActivity : AppCompatActivity() {
     private fun rearmWakeWord(
         delayMs: Long = 1000L
     ) {
-        /*
-         * One single place owns the transition back to passive
-         * wake-word listening after command capture, errors,
-         * no-speech results, or an unexpected WebSocket disconnect.
-         *
-         * Resetting wakeWordTriggered here is critical. Without it,
-         * a second detection can be ignored until the Activity is
-         * recreated.
-         *
-         * Also keep only one delayed rearm pending at a time. When the
-         * backend is offline, repeated connection failures can otherwise
-         * pile up multiple reconnect attempts.
-         */
         wakeWordTriggered =
             false
 
@@ -1405,10 +1525,6 @@ class MainActivity : AppCompatActivity() {
 
 
     private fun stopWakeWordSystem() {
-        /*
-         * This is an intentional shutdown. Do not let the resulting
-         * WebSocket close/failure callback restart passive listening.
-         */
         wakeAutoReconnectEnabled =
             false
 
@@ -1434,11 +1550,10 @@ class MainActivity : AppCompatActivity() {
             null
 
         try {
-            socket
-                ?.close(
-                    1000,
-                    "Wake listener stopping"
-                )
+            socket?.close(
+                1000,
+                "Wake listener stopping"
+            )
 
         } catch (
             _: Exception
@@ -1543,6 +1658,23 @@ class MainActivity : AppCompatActivity() {
     }
 
 
+    private fun isNetworkConnected(): Boolean {
+        val connectivityManager =
+            getSystemService(
+                CONNECTIVITY_SERVICE
+            ) as ConnectivityManager
+
+        @Suppress(
+            "DEPRECATION"
+        )
+        val networkInfo =
+            connectivityManager.activeNetworkInfo
+
+        return networkInfo !=
+                null &&
+                networkInfo.isConnected
+    }
+
 
     private fun getNetworkStateJson(): String {
         val connectivityManager =
@@ -1624,10 +1756,6 @@ class MainActivity : AppCompatActivity() {
         @JavascriptInterface
         fun startRecording() {
             runOnUiThread {
-                /*
-                 * Push-to-talk always gets priority over passive
-                 * wake listening.
-                 */
                 stopWakeWordSystem()
 
                 startNativeRecording()
@@ -2257,7 +2385,11 @@ class MainActivity : AppCompatActivity() {
         } catch (
             exception: Exception
         ) {
-            exception.printStackTrace()
+            Log.e(
+                WAKE_LOG,
+                "Microphone failed to start",
+                exception
+            )
 
             cleanupRecorder()
 
@@ -2289,7 +2421,11 @@ class MainActivity : AppCompatActivity() {
         } catch (
             exception: RuntimeException
         ) {
-            exception.printStackTrace()
+            Log.e(
+                WAKE_LOG,
+                "Recording was too short",
+                exception
+            )
 
             recordingFile
                 ?.delete()
@@ -2397,11 +2533,6 @@ class MainActivity : AppCompatActivity() {
                         transcript
                     )
 
-                    /*
-                     * Successful transcription used to be the one path
-                     * that did not explicitly rearm passive wake listening.
-                     * Re-arm here after handing the transcript to face.js.
-                     */
                     rearmWakeWord(
                         1500L
                     )
@@ -2410,7 +2541,11 @@ class MainActivity : AppCompatActivity() {
             } catch (
                 exception: Exception
             ) {
-                exception.printStackTrace()
+                Log.e(
+                    WAKE_LOG,
+                    "Transcription failed",
+                    exception
+                )
 
                 file.delete()
 
@@ -2666,7 +2801,7 @@ class MainActivity : AppCompatActivity() {
 
     /*
      * =====================================================================
-     * Permissions
+     * Vision JavaScript callbacks
      * =====================================================================
      */
 
@@ -2726,6 +2861,13 @@ class MainActivity : AppCompatActivity() {
         )
     }
 
+
+    /*
+     * =====================================================================
+     * Permissions
+     * =====================================================================
+     */
+
     override fun onRequestPermissionsResult(
         requestCode: Int,
         permissions:
@@ -2766,10 +2908,6 @@ class MainActivity : AppCompatActivity() {
                 )
             }
 
-            /*
-             * If the user just granted mic access through PTT,
-             * wake-word listening becomes available too.
-             */
             if (
                 granted &&
                 !isRecording
@@ -2841,6 +2979,18 @@ class MainActivity : AppCompatActivity() {
     }
 
 
+    @Suppress(
+        "DEPRECATION"
+    )
+    override fun onBackPressed() {
+        /*
+         * BMO is an appliance-style interface.
+         * Ignore Back and immediately restore immersive mode.
+         */
+        hideSystemUI()
+    }
+
+
     override fun onWindowFocusChanged(
         hasFocus: Boolean
     ) {
@@ -2853,6 +3003,36 @@ class MainActivity : AppCompatActivity() {
         ) {
             hideSystemUI()
         }
+    }
+
+
+    override fun onStart() {
+        super.onStart()
+
+        @Suppress(
+            "DEPRECATION"
+        )
+        registerReceiver(
+            connectivityReceiver,
+            IntentFilter(
+                ConnectivityManager.CONNECTIVITY_ACTION
+            )
+        )
+    }
+
+
+    override fun onStop() {
+        try {
+            unregisterReceiver(
+                connectivityReceiver
+            )
+
+        } catch (
+            _: Exception
+        ) {
+        }
+
+        super.onStop()
     }
 
 
@@ -2894,6 +3074,17 @@ class MainActivity : AppCompatActivity() {
         mainHandler.removeCallbacks(
             retryRunnable
         )
+
+        mainHandler.removeCallbacks(
+            webViewWatchdogRunnable
+        )
+
+        wakeRearmRunnable
+            ?.let {
+                mainHandler.removeCallbacks(
+                    it
+                )
+            }
 
         stopWakeWordSystem()
 
