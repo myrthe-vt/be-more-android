@@ -2620,6 +2620,123 @@ def get_screensaver_thought():
     from core.search import search_web, search_images
     from core.config import LLM_URL, FAST_LLM_MODEL
 
+    def choose_idle_expression(
+        topic_text,
+        thought_text
+    ):
+        """
+        Ask BMO's fast local model how the thing it just learned
+        actually makes BMO feel.
+        """
+        valid_expressions = {
+            "happy",
+            "sad",
+            "angry",
+            "surprised",
+            "sleepy",
+            "daydream",
+            "dizzy",
+            "cheeky",
+            "heart",
+            "starry_eyed",
+            "confused",
+            "shhh",
+            "jamming",
+            "football",
+            "detective",
+            "sir_mano",
+            "bored",
+            "curious",
+        }
+
+        try:
+            import requests as http_requests
+
+            expression_messages = [
+                {
+                    "role": "system",
+                    "content": (
+                        "Choose BMO's facial expression for an idle "
+                        "thought. Pick EXACTLY ONE from this list: "
+                        "happy, sad, angry, surprised, sleepy, "
+                        "daydream, dizzy, cheeky, heart, starry_eyed, "
+                        "confused, shhh, jamming, football, detective, "
+                        "sir_mano, bored, curious. "
+                        "Base the choice on the meaning and emotional "
+                        "tone of what BMO learned. Prefer curious for "
+                        "ordinary interesting facts. Use strong "
+                        "expressions only when clearly appropriate. "
+                        "Reply ONLY with the expression name."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"Topic: {topic_text or 'unknown'}\n"
+                        f"Thought: {thought_text or ''}"
+                    ),
+                },
+            ]
+
+            payload = {
+                "model": FAST_LLM_MODEL,
+                "messages": sanitize_messages(
+                    expression_messages
+                ),
+                "stream": False,
+                "options": {
+                    "temperature": 0.2,
+                    "num_predict": 8,
+                },
+            }
+
+            response = http_requests.post(
+                LLM_URL,
+                json=payload,
+                timeout=10
+            )
+
+            if response.status_code == 200:
+                expression = (
+                    response
+                    .json()
+                    .get(
+                        "message",
+                        {}
+                    )
+                    .get(
+                        "content",
+                        ""
+                    )
+                    .strip()
+                    .lower()
+                    .replace(
+                        "-",
+                        "_"
+                    )
+                    .replace(
+                        " ",
+                        "_"
+                    )
+                )
+
+                expression = re.sub(
+                    r"[^a-z_]",
+                    "",
+                    expression
+                )
+
+                if expression in valid_expressions:
+                    return expression
+
+        except Exception as e:
+            logger.warning(
+                f"[SCREENSAVER-WEB] Expression classification failed: {e}"
+            )
+
+        return "curious"
+
+
     fallback_phrases = [
         "I wonder what Finn and Jake are doing right now.",
         "Does anyone want to play a video game? No? ...Okay.",
@@ -2634,6 +2751,7 @@ def get_screensaver_thought():
 
     phrase = None
     image_url = None
+    topic = None
 
     try:
         # 1. Ask the LLM for a random, weird, or interesting topic to search for
@@ -2754,7 +2872,23 @@ def get_screensaver_thought():
     if not phrase:
         phrase = random.choice(fallback_phrases)
 
-    return {"thought": phrase, "image_url": image_url}
+    expression = choose_idle_expression(
+        topic,
+        phrase
+    )
+
+    logger.info(
+        "[SCREENSAVER-WEB] "
+        f"Topic={topic!r} "
+        f"Expression={expression!r}"
+    )
+
+    return {
+        "topic": topic,
+        "thought": phrase,
+        "expression": expression,
+        "image_url": image_url,
+    }
 
 if __name__ == "__main__":
     import uvicorn

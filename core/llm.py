@@ -441,6 +441,284 @@ def _with_current_context(messages):
     return out
 
 
+
+# ============================================================================
+# BMO REALTIME SEARCH ROUTING
+# ============================================================================
+
+_REALTIME_SEARCH_KEYWORDS = [
+    "weather",
+    "forecast",
+    "temperature",
+    "tonight",
+    "tomorrow",
+    "today",
+    "news",
+    "latest",
+    "recent",
+    "recently",
+    "current",
+    "currently",
+    "right now",
+    "score",
+    "stocks",
+    "bitcoin",
+    "crypto",
+    "price of",
+    "happening",
+    "live",
+    "update",
+    "updates",
+    "development",
+    "developments",
+]
+
+_REALTIME_QUESTION_MARKERS = [
+    "what",
+    "who",
+    "when",
+    "where",
+    "find",
+    "search",
+    "tell me",
+    "look up",
+    "lookup",
+    "check",
+    "is there",
+    "are there",
+    "did",
+    "has",
+    "have",
+    "can you",
+    "?",
+]
+
+
+def _needs_realtime_search(user_text: str) -> bool:
+    """
+    Decide whether a request should get live web data before it reaches
+    the normal conversational LLM.
+
+    This intentionally happens outside the LLM so BMO cannot mistakenly
+    claim that it has no internet when the user clearly asked for
+    current information.
+    """
+    lower_text = (user_text or "").lower().strip()
+
+    if not lower_text:
+        return False
+
+    has_realtime_keyword = any(
+        keyword in lower_text
+        for keyword in _REALTIME_SEARCH_KEYWORDS
+    )
+
+    if not has_realtime_keyword:
+        return False
+
+    has_question_marker = any(
+        marker in lower_text
+        for marker in _REALTIME_QUESTION_MARKERS
+    )
+
+    # Some perfectly natural voice requests are fragments rather than
+    # grammatical questions:
+    #
+    #   "latest Zelda news"
+    #   "weather Amsterdam"
+    #   "current bitcoin price"
+    #
+    # Those should still search.
+    fragment_prefixes = (
+        "latest ",
+        "recent ",
+        "current ",
+        "today ",
+        "weather ",
+        "forecast ",
+        "news ",
+        "live ",
+    )
+
+    looks_like_fragment_request = lower_text.startswith(
+        fragment_prefixes
+    )
+
+    return (
+        has_question_marker
+        or looks_like_fragment_request
+    )
+
+
+def _clean_search_query(user_text: str) -> str:
+    """
+    Turn a spoken request into a compact web-search query.
+
+    This is especially useful after speech recognition mistakes. For example:
+
+        "can you find some recent news on cell death breath of the wi"
+
+    may become:
+
+        "recent Zelda Breath of the Wild news"
+
+    The cleanup model is instructed not to invent unrelated subjects.
+    If cleanup fails for any reason, the original transcript is used.
+    """
+    original = (user_text or "").strip()
+
+    if not original:
+        return original
+
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "Rewrite a spoken voice-assistant request as one concise "
+                "web search query. Preserve the user's intent and named "
+                "entities. Correct obvious speech-recognition mistakes only "
+                "when the intended term is strongly inferable from context. "
+                "Do not answer the question. Do not explain anything. "
+                "Return ONLY the search query, with no quotes or prefix."
+            ),
+        },
+        {
+            "role": "user",
+            "content": original,
+        },
+    ]
+
+    payload = {
+        "model": FAST_LLM_MODEL,
+        "messages": _sanitize_messages(messages),
+        "stream": False,
+        "options": {
+            "temperature": 0.1,
+            "num_predict": 40,
+        },
+    }
+
+    try:
+        response = requests.post(
+            LLM_URL,
+            json=payload,
+            timeout=3,
+        )
+
+        if response.status_code != 200:
+            return original
+
+        cleaned = (
+            response.json()
+            .get("message", {})
+            .get("content", "")
+            .strip()
+            .strip('"')
+            .strip("'")
+        )
+
+        # Keep this deliberately conservative. A huge response is almost
+        # certainly the model answering rather than rewriting.
+        if (
+            not cleaned
+            or len(cleaned) < 2
+            or len(cleaned) > 180
+        ):
+            return original
+
+        cleaned = re.sub(
+            r"^(search query|query)\s*:\s*",
+            "",
+            cleaned,
+            flags=re.IGNORECASE,
+        ).strip()
+
+        logger.info(
+            "Search query cleanup: %r -> %r",
+            original,
+            cleaned,
+        )
+
+        return cleaned or original
+
+    except Exception as exc:
+        logger.warning(
+            "Search query cleanup failed: %s",
+            exc,
+        )
+        return original
+
+
+def _inject_realtime_search(history: list, user_text: str) -> bool:
+    """
+    Search the web and replace the most recent user turn with a compact
+    live-data prompt for the conversational model.
+
+    Returns True when usable search data was injected.
+    """
+    if not _needs_realtime_search(user_text):
+        return False
+
+    search_query = _clean_search_query(
+        user_text
+    )
+
+    logger.info(
+        "Pre-LLM realtime search triggered: %r",
+        search_query,
+    )
+
+    try:
+        search_result = search_web(
+            search_query
+        )
+
+        if (
+            not search_result
+            or search_result in (
+                "SEARCH_EMPTY",
+                "SEARCH_ERROR",
+            )
+            or len(search_result) <= 50
+        ):
+            logger.warning(
+                "Realtime search returned no usable result for %r",
+                search_query,
+            )
+            return False
+
+        clean_result = re.sub(
+            r"^SEARCH RESULTS for '.*?':\n?",
+            "",
+            search_result,
+        ).strip()
+
+        history[-1]["content"] = (
+            f"[LIVE DATA: {clean_result}] "
+            f"Using only the above live data, answer the user's original "
+            f"question in one or two sentences as BMO. "
+            f"Be careful about certainty: distinguish between official "
+            f"announcements, reported information, rumors/speculation, and "
+            f"unclear claims. Never present speculation as confirmed fact. "
+            f"If the live data is uncertain, say so naturally. "
+            f"Original question: {user_text}"
+        )
+
+        logger.info(
+            "Realtime search data injected successfully"
+        )
+
+        return True
+
+    except Exception as exc:
+        logger.warning(
+            "Pre-LLM web search failed: %s",
+            exc,
+        )
+        return False
+
+
+
 class Brain:
     def __init__(self, persist: bool = True):
         """persist=False keeps this Brain off memory.json entirely.
@@ -586,33 +864,13 @@ class Brain:
 
         print(f"[LLM] No pre-LLM action matched for: '{lower_text[:60]}'")
 
-        # Pre-LLM web search — same logic as stream_think
-        realtime_keywords = [
-            "weather", "forecast", "temperature", "tonight", "tomorrow",
-            "news", "latest", "right now", "score", "stocks", "bitcoin",
-            "crypto", "price of", "happening", "recently", "live",
-        ]
-        question_markers = [
-            "what", "who", "when", "where", "find", "search", "tell me",
-            "look up", "check", "is there", "did", "?",
-        ]
-        has_realtime_kw = False  # Disabled pre-LLM web search for latency optimization
-        has_question = False
-        search_injected = False
-        if has_realtime_kw and has_question:
-            try:
-                search_result = search_web(user_text)
-                if search_result and search_result not in ("SEARCH_EMPTY", "SEARCH_ERROR") and len(search_result) > 50:
-                    # Strip the verbose "SEARCH RESULTS for '...':" header from search.py
-                    clean_result = re.sub(r"^SEARCH RESULTS for '.*?':\n?", "", search_result).strip()
-                    # Inject as a tight [LIVE DATA] block — clearer than the previous format
-                    self.history[-1]["content"] = (
-                        f"[LIVE DATA: {clean_result}] "
-                        f"Using only the above live data, answer in one or two sentences as BMO: {user_text}"
-                    )
-                    search_injected = True
-            except Exception as e:
-                logger.warning(f"Pre-LLM web search failed: {e}")
+        # Pre-LLM realtime search.
+        # Current-information requests are resolved before the normal LLM
+        # so the model cannot incorrectly claim that it has no internet.
+        search_injected = _inject_realtime_search(
+            self.history,
+            user_text,
+        )
 
         # Simple heuristic to route to a faster model for simple chat
         complex_keywords = ["explain", "story", "how", "why", "code", "write", "create", "analyze", "compare", "difference", "history", "long"]
@@ -817,38 +1075,12 @@ class Brain:
 
         print(f"[LLM-STREAM] No pre-LLM action matched for: '{lower_text[:60]}'")
 
-        # Pre-LLM keyword check: if the question likely needs real-time info,
-        # do the web search now rather than relying on the model to emit JSON.
-        # Require at least one realtime keyword AND the text to look like a question
-        # (contains 'what', 'who', 'when', 'find', 'search', '?', etc.) to avoid
-        # false triggers on casual phrases like 'how are you doing today'.
-        realtime_keywords = [
-            "weather", "forecast", "temperature", "tonight", "tomorrow",
-            "news", "latest", "right now", "score", "stocks", "bitcoin",
-            "crypto", "price of", "happening", "recently", "live",
-        ]
-        question_markers = [
-            "what", "who", "when", "where", "find", "search", "tell me",
-            "look up", "check", "is there", "did", "?",
-        ]
-        has_realtime_kw = False  # Disabled pre-LLM web search for latency optimization
-        has_question = False
-        needs_search = has_realtime_kw and has_question
-        search_injected = False
-        if needs_search:
-            try:
-                search_result = search_web(user_text)
-                # Only inject if we got a real result (not empty/error sentinel)
-                if search_result and search_result not in ("SEARCH_EMPTY", "SEARCH_ERROR") and len(search_result) > 50:
-                    # Strip verbose "SEARCH RESULTS for '...':" prefix from search.py
-                    clean_result = re.sub(r"^SEARCH RESULTS for '.*?':\n?", "", search_result).strip()
-                    self.history[-1]["content"] = (
-                        f"[LIVE DATA: {clean_result}] "
-                        f"Using only the above live data, answer in one or two sentences as BMO: {user_text}"
-                    )
-                    search_injected = True
-            except Exception as e:
-                logger.warning(f"Pre-LLM web search failed: {e}")
+        # Pre-LLM realtime search.
+        # Keep streaming and non-streaming routing identical.
+        search_injected = _inject_realtime_search(
+            self.history,
+            user_text,
+        )
 
         # Simple heuristic to route to a faster model for simple chat
         complex_keywords = ["explain", "story", "how", "why", "code", "write", "create", "analyze", "compare", "difference", "history", "long"]

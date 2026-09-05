@@ -1887,241 +1887,22 @@ function resetDaydreamTimer() {
 
 
 function scheduleDaydreamMood() {
-    if (
-        !daydreamActive
-    ) {
-        return;
-    }
-
-    const delay =
-        DAYDREAM_MOOD_MIN_MS +
-        Math.random() *
-        (
-            DAYDREAM_MOOD_MAX_MS -
-            DAYDREAM_MOOD_MIN_MS
-        );
-
-    daydreamMoodTimer =
-        setTimeout(
-            () => {
-                if (
-                    !daydreamActive
-                ) {
-                    return;
-                }
-
-                if (
-                    !canDaydream()
-                ) {
-                    resetDaydreamTimer();
-
-                    return;
-                }
-
-                /*
-                 * Idle BMO occasionally wanders into little critter
-                 * animations and odd moods.
-                 *
-                 * Repeated entries act as simple weighting so the
-                 * stranger states stay delightful rather than constant.
-                 */
-                /*
-                 * Passive idle motion should stay emotionally neutral.
-                 *
-                 * Strong expressions are now driven by whatever BMO is
-                 * actually thinking about rather than appearing randomly.
-                 *
-                 * Critters are also removed from the full-screen idle
-                 * rotation for now. Their assets remain available for a
-                 * future overlay system.
-                 */
-                const moods = [
-                    "daydream",
-                    "daydream",
-                    "daydream",
-
-                    "idle",
-                    "idle",
-
-                    "sleepy",
-                    "bored",
-                ];
-
-                const nextMood =
-                    moods[
-                        Math.floor(
-                            Math.random() *
-                            moods.length
-                        )
-                    ];
-
-                setFaceState(
-                    nextMood
-                );
-
-                scheduleDaydreamMood();
-            },
-            delay
-        );
-}
-
-
-/*
- * Idle-thought expressions
- *
- * BMO's stronger facial expressions should have a reason.
- * Instead of choosing them randomly, infer a suitable expression
- * from the actual thought BMO is currently displaying.
- *
- * This is deliberately conservative. If nothing clearly matches,
- * BMO simply looks curious.
- */
-
-function inferDaydreamThoughtExpression(
-    thought
-) {
-    const text =
-        String(
-            thought ||
-            ""
-        ).toLowerCase();
-
-
     /*
-     * Affection, sweetness, animals doing adorable things, etc.
+     * Old versions of BMO randomly cycled through emotional faces
+     * while idle.
+     *
+     * That made BMO sometimes look sad/angry/etc. for no actual
+     * reason.
+     *
+     * New rule:
+     *
+     *     normal idle -> idle
+     *     passive daydream -> daydream
+     *     actual fetched thought -> semantic expression
+     *
+     * There is deliberately no random emotion timer anymore.
      */
-    if (
-        /\b(love|lovely|adorable|cute|heartwarming|sweet|affection|cuddle|hug|holding hands)\b/.test(
-            text
-        )
-    ) {
-        return "heart";
-    }
 
-
-    /*
-     * Space gets its own slightly awestruck look.
-     */
-    if (
-        /\b(space|planet|moon|star|stars|galaxy|galaxies|nebula|universe|astronom|cosmic|saturn|jupiter|mars|venus)\b/.test(
-            text
-        )
-    ) {
-        return "starry_eyed";
-    }
-
-
-    /*
-     * Music-related discoveries.
-     */
-    if (
-        /\b(music|song|album|singer|band|concert|melody|musician|dance|dancing)\b/.test(
-            text
-        )
-    ) {
-        return "jamming";
-    }
-
-
-    /*
-     * Clearly sad or worrying subjects.
-     */
-    if (
-        /\b(sad|died|death|dead|loss|lost|extinct|endangered|decline|disaster|tragedy|tragic|destroyed|suffering)\b/.test(
-            text
-        )
-    ) {
-        return "sad";
-    }
-
-
-    /*
-     * Things that are genuinely infuriating rather than merely negative.
-     */
-    if (
-        /\b(outrage|outrageous|cruel|cruelty|abuse|poaching|deliberately destroyed)\b/.test(
-            text
-        )
-    ) {
-        return "angry";
-    }
-
-
-    /*
-     * Unexpected discoveries and record-breaking oddities.
-     */
-    if (
-        /\b(surpris|unexpected|astonish|amazing|incredible|record-breaking|record breaking|first ever|never before|discovered|discovery)\b/.test(
-            text
-        )
-    ) {
-        return "surprised";
-    }
-
-
-    /*
-     * Weird mysteries and things that do not make immediate sense.
-     */
-    if (
-        /\b(mystery|mysterious|unknown|unexplained|puzzling|baffling|strange|weird|odd|why does|nobody knows)\b/.test(
-            text
-        )
-    ) {
-        return "confused";
-    }
-
-
-    /*
-     * Sleep-related thoughts can make BMO look appropriately sleepy.
-     */
-    if (
-        /\b(sleep|sleeping|dream|dreaming|nap|napping|bedtime)\b/.test(
-            text
-        )
-    ) {
-        return "sleepy";
-    }
-
-
-    /*
-     * Positive discoveries without a stronger matching emotion.
-     */
-    if (
-        /\b(good news|success|successful|recovered|restored|rescued|saved|thriving|celebrat|wonderful|delightful)\b/.test(
-            text
-        )
-    ) {
-        return "happy";
-    }
-
-
-    /*
-     * Most idle research is fundamentally BMO going:
-     * "Huh! What's this?"
-     */
-    return "curious";
-}
-
-
-function showDaydreamThoughtExpression(
-    thought
-) {
-    if (
-        !daydreamActive ||
-        !canDaydream()
-    ) {
-        return;
-    }
-
-    const expression =
-        inferDaydreamThoughtExpression(
-            thought
-        );
-
-    /*
-     * Don't let the ordinary idle mood timer replace the expression
-     * halfway through BMO's thought.
-     */
     clearTimeout(
         daydreamMoodTimer
     );
@@ -2129,44 +1910,21 @@ function showDaydreamThoughtExpression(
     daydreamMoodTimer =
         null;
 
-    setFaceState(
-        expression
-    );
+    if (
+        !daydreamActive ||
+        !canDaydream()
+    ) {
+        return;
+    }
 
-    console.log(
-        "BMO idle thought expression:",
-        expression,
-        "for:",
-        thought
-    );
-
-    /*
-     * Keep the expression visible alongside the thought, then drift
-     * naturally back into daydream mode.
-     */
-    daydreamMoodTimer =
-        setTimeout(
-            () => {
-                daydreamMoodTimer =
-                    null;
-
-                if (
-                    !daydreamActive ||
-                    !canDaydream()
-                ) {
-                    return;
-                }
-
-                setFaceState(
-                    "daydream"
-                );
-
-                scheduleDaydreamMood();
-            },
-            12000
+    if (
+        !daydreamThoughtVisible
+    ) {
+        setFaceState(
+            "daydream"
         );
+    }
 }
-
 
 async function fetchDaydreamThought() {
     if (
@@ -2211,35 +1969,104 @@ async function fetchDaydreamThought() {
             return;
         }
 
+        const topic =
+            String(
+                data.topic ||
+                ""
+            ).trim();
+
         const thought =
             String(
                 data.thought ||
                 ""
             ).trim();
 
+        const backendExpression =
+            String(
+                data.expression ||
+                ""
+            )
+                .trim()
+                .toLowerCase();
+
         if (
-            thought
+            !thought
         ) {
-            daydreamThoughtVisible =
-                true;
+            return;
+        }
 
-            showDaydreamThoughtExpression(
-                thought
-            );
+        daydreamThoughtVisible =
+            true;
 
-            showTranscript(
-                thought,
+        /*
+         * The backend understands the actual thought meaning.
+         * Use its expression when valid.
+         */
+        const expression =
+            VALID_EXPRESSIONS.has(
+                backendExpression
+            )
+                ? backendExpression
+                : "curious";
+
+        setFaceState(
+            expression
+        );
+
+        showTranscript(
+            thought,
+            12000
+        );
+
+        if (
+            topic
+        ) {
+            showStatus(
+                `Thinking about: ${topic}`,
                 12000
             );
 
-            setTimeout(
-                () => {
-                    daydreamThoughtVisible =
-                        false;
-                },
-                12100
+        } else {
+            showStatus(
+                "BMO is pondering...",
+                12000
             );
         }
+
+        console.log(
+            "BMO idle thought:",
+            {
+                topic:
+                    topic,
+
+                expression:
+                    expression,
+
+                thought:
+                    thought,
+            }
+        );
+
+        /*
+         * When the thought finishes, return to the calm daydream
+         * face rather than selecting another random mood.
+         */
+        setTimeout(
+            () => {
+                daydreamThoughtVisible =
+                    false;
+
+                if (
+                    daydreamActive &&
+                    canDaydream()
+                ) {
+                    setFaceState(
+                        "daydream"
+                    );
+                }
+            },
+            12100
+        );
 
     } catch (error) {
         console.debug(
@@ -2252,7 +2079,6 @@ async function fetchDaydreamThought() {
             false;
     }
 }
-
 
 function scheduleDaydreamThought() {
     if (
@@ -4325,6 +4151,46 @@ window.onNativeRecordingStopped =
             0
         );
 
+        /*
+         * Recording is finished now, so it is safe for BMO to
+         * make a little acknowledgement without feeding itself
+         * into the microphone.
+         */
+        playBmoPersonalitySound(
+            "ack_sounds",
+            BMO_SOUND_CONFIG
+                .acknowledgementVolume,
+            () => {
+                clearTimeout(
+                    bmoThinkingSoundTimer
+                );
+
+                bmoThinkingSoundTimer =
+                    setTimeout(
+                        () => {
+                            /*
+                             * Only make a thinking noise if we're
+                             * genuinely still waiting for the answer.
+                             */
+                            if (
+                                !isRecording &&
+                                !currentAudio &&
+                                bmoRenderer.state ===
+                                    "thinking"
+                            ) {
+                                playBmoPersonalitySound(
+                                    "thinking_sounds",
+                                    BMO_SOUND_CONFIG
+                                        .thinkingVolume
+                                );
+                            }
+                        },
+                        BMO_SOUND_CONFIG
+                            .thinkingDelayMs
+                    );
+            }
+        );
+
         if (
             "vibrate" in
             navigator
@@ -4458,6 +4324,12 @@ window.onNativeMicError =
 
         setFaceState(
             "error"
+        );
+
+        playBmoPersonalitySound(
+            "error_sounds",
+            BMO_SOUND_CONFIG
+                .errorVolume
         );
 
         showStatus(
@@ -4725,3 +4597,435 @@ scheduleDeviceStateChecks();
 resetDaydreamTimer();
 
 startBMOFace();
+
+
+
+// ============================================================================
+// BMO PERSONALITY SOUNDS
+// ============================================================================
+
+const BMO_SOUND_CONFIG = {
+    enabled:
+        true,
+
+    greetingVolume:
+        0.65,
+
+    acknowledgementVolume:
+        0.55,
+
+    thinkingVolume:
+        0.32,
+
+    errorVolume:
+        0.55,
+
+    thinkingDelayMs:
+        900,
+
+    stateCooldownMs:
+        700
+};
+
+
+const bmoPersonalitySounds = {
+    greeting_sounds:
+        [],
+
+    ack_sounds:
+        [],
+
+    thinking_sounds:
+        [],
+
+    error_sounds:
+        []
+};
+
+
+let bmoPersonalityAudio =
+    null;
+
+let bmoSoundLastState =
+    null;
+
+let bmoSoundLastStateAt =
+    0;
+
+let bmoThinkingSoundTimer =
+    null;
+
+
+async function loadBmoSoundCategory(
+    category
+) {
+    try {
+        const response =
+            await fetch(
+                `/api/sounds/${category}`,
+                {
+                    cache:
+                        "no-store"
+                }
+            );
+
+        if (
+            !response.ok
+        ) {
+            return;
+        }
+
+        const data =
+            await response.json();
+
+        const sounds =
+            Array.isArray(
+                data.sounds
+            )
+                ? data.sounds
+                : [];
+
+        bmoPersonalitySounds[
+            category
+        ] =
+            sounds;
+
+        console.log(
+            `BMO loaded ${sounds.length} ${category}`
+        );
+
+    } catch (
+        error
+    ) {
+        console.warn(
+            `Could not load ${category}:`,
+            error
+        );
+    }
+}
+
+
+async function loadBmoPersonalitySounds() {
+    await Promise.all(
+        Object.keys(
+            bmoPersonalitySounds
+        ).map(
+            loadBmoSoundCategory
+        )
+    );
+}
+
+
+function chooseRandomBmoSound(
+    category
+) {
+    const sounds =
+        bmoPersonalitySounds[
+            category
+        ] ||
+        [];
+
+    if (
+        sounds.length ===
+        0
+    ) {
+        return null;
+    }
+
+    return sounds[
+        Math.floor(
+            Math.random() *
+            sounds.length
+        )
+    ];
+}
+
+
+function stopBmoPersonalitySound() {
+    if (
+        bmoPersonalityAudio
+    ) {
+        try {
+            bmoPersonalityAudio.pause();
+
+            bmoPersonalityAudio.currentTime =
+                0;
+
+        } catch (
+            error
+        ) {
+        }
+    }
+
+    bmoPersonalityAudio =
+        null;
+}
+
+
+function playBmoPersonalitySound(
+    category,
+    volume = 0.5,
+    onEnded = null
+) {
+    if (
+        !BMO_SOUND_CONFIG.enabled
+    ) {
+        return;
+    }
+
+    const soundUrl =
+        chooseRandomBmoSound(
+            category
+        );
+
+    console.log(
+        "BMO sound requested:",
+        category,
+        soundUrl ||
+            "(no sound available)"
+    );
+
+    if (
+        !soundUrl
+    ) {
+        if (
+            typeof onEnded ===
+            "function"
+        ) {
+            onEnded();
+        }
+
+        return;
+    }
+
+    stopBmoPersonalitySound();
+
+    const audio =
+        new Audio(
+            soundUrl
+        );
+
+    audio.volume =
+        Math.max(
+            0,
+            Math.min(
+                1,
+                volume
+            )
+        );
+
+    bmoPersonalityAudio =
+        audio;
+
+    audio.onended =
+        () => {
+            if (
+                bmoPersonalityAudio ===
+                audio
+            ) {
+                bmoPersonalityAudio =
+                    null;
+            }
+
+            if (
+                typeof onEnded ===
+                "function"
+            ) {
+                onEnded();
+            }
+        };
+
+    audio.onerror =
+        () => {
+            if (
+                bmoPersonalityAudio ===
+                audio
+            ) {
+                bmoPersonalityAudio =
+                    null;
+            }
+
+            console.warn(
+                "BMO personality sound failed:",
+                soundUrl
+            );
+
+            if (
+                typeof onEnded ===
+                "function"
+            ) {
+                onEnded();
+            }
+        };
+
+    console.log(
+        "BMO attempting sound playback:",
+        soundUrl
+    );
+
+    audio.play()
+        .then(
+            () => {
+                console.log(
+                    "BMO sound playback started:",
+                    soundUrl
+                );
+            }
+        )
+        .catch(
+            error => {
+                console.warn(
+                    "BMO personality sound playback failed:",
+                    soundUrl,
+                    error
+                );
+
+                if (
+                    typeof onEnded ===
+                    "function"
+                ) {
+                    onEnded();
+                }
+            }
+        );
+}
+
+
+function scheduleBmoThinkingSound() {
+    clearTimeout(
+        bmoThinkingSoundTimer
+    );
+
+    bmoThinkingSoundTimer =
+        setTimeout(
+            () => {
+                bmoThinkingSoundTimer =
+                    null;
+
+                /*
+                 * Only play if BMO really is still thinking.
+                 */
+                if (
+                    bmoSoundLastState !==
+                    "thinking"
+                ) {
+                    return;
+                }
+
+                playBmoPersonalitySound(
+                    "thinking_sounds",
+                    BMO_SOUND_CONFIG
+                        .thinkingVolume
+                );
+            },
+            BMO_SOUND_CONFIG
+                .thinkingDelayMs
+        );
+}
+
+
+function handleBmoPersonalityState(
+    state
+) {
+    const now =
+        Date.now();
+
+    if (
+        state ===
+        bmoSoundLastState &&
+        (
+            now -
+            bmoSoundLastStateAt
+        ) <
+        BMO_SOUND_CONFIG
+            .stateCooldownMs
+    ) {
+        return;
+    }
+
+    bmoSoundLastState =
+        state;
+
+    bmoSoundLastStateAt =
+        now;
+
+    if (
+        state !==
+        "thinking"
+    ) {
+        clearTimeout(
+            bmoThinkingSoundTimer
+        );
+
+        bmoThinkingSoundTimer =
+            null;
+    }
+
+    switch (
+        state
+    ) {
+        case "thinking":
+
+            /*
+             * We deliberately acknowledge AFTER recording has
+             * finished so BMO's own speaker does not feed into
+             * the microphone.
+             */
+            playBmoPersonalitySound(
+                "ack_sounds",
+                BMO_SOUND_CONFIG
+                    .acknowledgementVolume,
+                () => {
+                    scheduleBmoThinkingSound();
+                }
+            );
+
+            break;
+
+
+        case "error":
+
+            playBmoPersonalitySound(
+                "error_sounds",
+                BMO_SOUND_CONFIG
+                    .errorVolume
+            );
+
+            break;
+    }
+}
+
+
+/*
+ * Keep the existing face-state implementation intact.
+ * This wrapper simply observes state changes.
+ */
+
+/* Sound state hooks are now explicit in Android callbacks. */
+
+loadBmoPersonalitySounds()
+    .then(
+        () => {
+            /*
+             * Android WebView allows media playback without
+             * a user gesture, so this can act as BMO's little
+             * startup hello.
+             */
+            setTimeout(
+                () => {
+                    playBmoPersonalitySound(
+                        "greeting_sounds",
+                        BMO_SOUND_CONFIG
+                            .greetingVolume
+                    );
+                },
+                900
+            );
+        }
+    );
+
+
+// ============================================================================
+// END BMO PERSONALITY SOUNDS
+// ============================================================================
+
