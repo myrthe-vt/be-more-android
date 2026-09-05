@@ -9,8 +9,15 @@ const nativeShellRequested = pageParams.get("native") === "1";
 const HOLD_START_DELAY_MS = 120;
 const BACKEND_CHECK_INTERVAL_MS = 5000;
 const BACKEND_CHECK_TIMEOUT_MS = 3000;
+
+const BACKEND_RECOVERY_RELOAD_AFTER_MS = 15000;
+const BACKEND_RECOVERY_RETRY_MS = 2000;
+const BACKEND_RECOVERY_MAX_WAIT_MS = 30000;
+
 const TIMER_EVENT_CHECK_INTERVAL_MS = 1000;
-const DEVICE_STATE_CHECK_INTERVAL_MS = 30000;
+const DEVICE_STATE_CHECK_INTERVAL_MS = 3000;
+const CHARGER_REACTION_DURATION_MS = 3200;
+const CHARGER_REACTION_COOLDOWN_MS = 10000;
 
 const DAYDREAM_IDLE_MS = 90000;
 const DAYDREAM_THOUGHT_INTERVAL_MS = 120000;
@@ -634,12 +641,20 @@ let activePointerId = null;
 let backendOnline = true;
 let backendCheckTimer = null;
 
+let backendOfflineSince = null;
+let backendRecoveryTimer = null;
+let backendRecoveryStartedAt = null;
+
 let timerEventCheckTimer = null;
 let pendingTimerEvents = [];
 let processingTimerEvent = false;
 
 let deviceStateCheckTimer = null;
 let automaticLowBatteryActive = false;
+
+let lastBatteryChargingState = null;
+let lastChargerReactionAt = 0;
+let chargerReactionTimer = null;
 
 let currentAudio = null;
 
@@ -1317,6 +1332,129 @@ async function sendNativeNetworkState(
  * Automatic Android battery monitoring
  */
 
+function canShowDeviceReaction() {
+    return (
+        backendOnline &&
+        !isRecording &&
+        !recordingStartPending &&
+        !currentAudio &&
+        !processingTimerEvent &&
+        pendingTimerEvents.length ===
+            0 &&
+        !pendingCaptureAction &&
+        !pendingDeviceAction &&
+        ![
+            "listening",
+            "thinking",
+            "speaking",
+            "capturing",
+            "warmup",
+        ].includes(
+            bmoRenderer.state
+        )
+    );
+}
+
+
+function showChargerReaction(
+    charging,
+    batteryPercent
+) {
+    if (
+        !canShowDeviceReaction()
+    ) {
+        return;
+    }
+
+    const now =
+        Date.now();
+
+    if (
+        now -
+            lastChargerReactionAt <
+        CHARGER_REACTION_COOLDOWN_MS
+    ) {
+        return;
+    }
+
+    lastChargerReactionAt =
+        now;
+
+    clearTimeout(
+        chargerReactionTimer
+    );
+
+    stopDaydream(
+        false
+    );
+
+    clearTimeout(
+        daydreamTimer
+    );
+
+    daydreamTimer =
+        null;
+
+    if (
+        charging
+    ) {
+        setFaceState(
+            "heart"
+        );
+
+        showStatus(
+            "Yay, power!",
+            2200
+        );
+
+    } else {
+        setFaceState(
+            "curious"
+        );
+
+        showStatus(
+            "Running on battery",
+            1800
+        );
+    }
+
+    chargerReactionTimer =
+        setTimeout(
+            () => {
+                chargerReactionTimer =
+                    null;
+
+                if (
+                    !canShowDeviceReaction()
+                ) {
+                    return;
+                }
+
+                if (
+                    !charging &&
+                    Number.isFinite(
+                        batteryPercent
+                    ) &&
+                    batteryPercent <=
+                        15
+                ) {
+                    setFaceState(
+                        "low_battery"
+                    );
+
+                } else {
+                    setFaceState(
+                        "idle"
+                    );
+                }
+
+                resetDaydreamTimer();
+            },
+            CHARGER_REACTION_DURATION_MS
+        );
+}
+
+
 function canShowAutomaticLowBattery() {
     return (
         !isRecording &&
@@ -1367,6 +1505,45 @@ function updateAutomaticBatteryFace() {
                 batteryState.charging
             );
 
+        console.log(
+            "BMO battery poll:",
+            batteryPercent + "%",
+            "charging:",
+            charging,
+            "previous:",
+            lastBatteryChargingState
+        );
+
+        if (
+            lastBatteryChargingState ===
+            null
+        ) {
+            lastBatteryChargingState =
+                charging;
+
+        } else if (
+            charging !==
+            lastBatteryChargingState
+        ) {
+            const previousChargingState =
+                lastBatteryChargingState;
+
+            lastBatteryChargingState =
+                charging;
+
+            console.log(
+                "BMO charger state changed:",
+                previousChargingState,
+                "->",
+                charging
+            );
+
+            showChargerReaction(
+                charging,
+                batteryPercent
+            );
+        }
+
         const shouldUseLowBattery =
             Number.isFinite(
                 batteryPercent
@@ -1381,6 +1558,8 @@ function updateAutomaticBatteryFace() {
                 true;
 
             if (
+                chargerReactionTimer ===
+                    null &&
                 canShowAutomaticLowBattery()
             ) {
                 stopDaydream(
@@ -1396,6 +1575,8 @@ function updateAutomaticBatteryFace() {
         }
 
         if (
+            chargerReactionTimer ===
+                null &&
             automaticLowBatteryActive
         ) {
             automaticLowBatteryActive =
@@ -1744,6 +1925,16 @@ function scheduleDaydreamMood() {
                  * Repeated entries act as simple weighting so the
                  * stranger states stay delightful rather than constant.
                  */
+                /*
+                 * Passive idle motion should stay emotionally neutral.
+                 *
+                 * Strong expressions are now driven by whatever BMO is
+                 * actually thinking about rather than appearing randomly.
+                 *
+                 * Critters are also removed from the full-screen idle
+                 * rotation for now. Their assets remain available for a
+                 * future overlay system.
+                 */
                 const moods = [
                     "daydream",
                     "daydream",
@@ -1754,16 +1945,6 @@ function scheduleDaydreamMood() {
 
                     "sleepy",
                     "bored",
-                    "starry_eyed",
-
-                    "happy",
-                    "curious",
-
-                    "bee",
-                    "ladybug",
-                    "worm",
-
-                    "dizzy",
                 ];
 
                 const nextMood =
@@ -1781,6 +1962,208 @@ function scheduleDaydreamMood() {
                 scheduleDaydreamMood();
             },
             delay
+        );
+}
+
+
+/*
+ * Idle-thought expressions
+ *
+ * BMO's stronger facial expressions should have a reason.
+ * Instead of choosing them randomly, infer a suitable expression
+ * from the actual thought BMO is currently displaying.
+ *
+ * This is deliberately conservative. If nothing clearly matches,
+ * BMO simply looks curious.
+ */
+
+function inferDaydreamThoughtExpression(
+    thought
+) {
+    const text =
+        String(
+            thought ||
+            ""
+        ).toLowerCase();
+
+
+    /*
+     * Affection, sweetness, animals doing adorable things, etc.
+     */
+    if (
+        /\b(love|lovely|adorable|cute|heartwarming|sweet|affection|cuddle|hug|holding hands)\b/.test(
+            text
+        )
+    ) {
+        return "heart";
+    }
+
+
+    /*
+     * Space gets its own slightly awestruck look.
+     */
+    if (
+        /\b(space|planet|moon|star|stars|galaxy|galaxies|nebula|universe|astronom|cosmic|saturn|jupiter|mars|venus)\b/.test(
+            text
+        )
+    ) {
+        return "starry_eyed";
+    }
+
+
+    /*
+     * Music-related discoveries.
+     */
+    if (
+        /\b(music|song|album|singer|band|concert|melody|musician|dance|dancing)\b/.test(
+            text
+        )
+    ) {
+        return "jamming";
+    }
+
+
+    /*
+     * Clearly sad or worrying subjects.
+     */
+    if (
+        /\b(sad|died|death|dead|loss|lost|extinct|endangered|decline|disaster|tragedy|tragic|destroyed|suffering)\b/.test(
+            text
+        )
+    ) {
+        return "sad";
+    }
+
+
+    /*
+     * Things that are genuinely infuriating rather than merely negative.
+     */
+    if (
+        /\b(outrage|outrageous|cruel|cruelty|abuse|poaching|deliberately destroyed)\b/.test(
+            text
+        )
+    ) {
+        return "angry";
+    }
+
+
+    /*
+     * Unexpected discoveries and record-breaking oddities.
+     */
+    if (
+        /\b(surpris|unexpected|astonish|amazing|incredible|record-breaking|record breaking|first ever|never before|discovered|discovery)\b/.test(
+            text
+        )
+    ) {
+        return "surprised";
+    }
+
+
+    /*
+     * Weird mysteries and things that do not make immediate sense.
+     */
+    if (
+        /\b(mystery|mysterious|unknown|unexplained|puzzling|baffling|strange|weird|odd|why does|nobody knows)\b/.test(
+            text
+        )
+    ) {
+        return "confused";
+    }
+
+
+    /*
+     * Sleep-related thoughts can make BMO look appropriately sleepy.
+     */
+    if (
+        /\b(sleep|sleeping|dream|dreaming|nap|napping|bedtime)\b/.test(
+            text
+        )
+    ) {
+        return "sleepy";
+    }
+
+
+    /*
+     * Positive discoveries without a stronger matching emotion.
+     */
+    if (
+        /\b(good news|success|successful|recovered|restored|rescued|saved|thriving|celebrat|wonderful|delightful)\b/.test(
+            text
+        )
+    ) {
+        return "happy";
+    }
+
+
+    /*
+     * Most idle research is fundamentally BMO going:
+     * "Huh! What's this?"
+     */
+    return "curious";
+}
+
+
+function showDaydreamThoughtExpression(
+    thought
+) {
+    if (
+        !daydreamActive ||
+        !canDaydream()
+    ) {
+        return;
+    }
+
+    const expression =
+        inferDaydreamThoughtExpression(
+            thought
+        );
+
+    /*
+     * Don't let the ordinary idle mood timer replace the expression
+     * halfway through BMO's thought.
+     */
+    clearTimeout(
+        daydreamMoodTimer
+    );
+
+    daydreamMoodTimer =
+        null;
+
+    setFaceState(
+        expression
+    );
+
+    console.log(
+        "BMO idle thought expression:",
+        expression,
+        "for:",
+        thought
+    );
+
+    /*
+     * Keep the expression visible alongside the thought, then drift
+     * naturally back into daydream mode.
+     */
+    daydreamMoodTimer =
+        setTimeout(
+            () => {
+                daydreamMoodTimer =
+                    null;
+
+                if (
+                    !daydreamActive ||
+                    !canDaydream()
+                ) {
+                    return;
+                }
+
+                setFaceState(
+                    "daydream"
+                );
+
+                scheduleDaydreamMood();
+            },
+            12000
         );
 }
 
@@ -1839,6 +2222,10 @@ async function fetchDaydreamThought() {
         ) {
             daydreamThoughtVisible =
                 true;
+
+            showDaydreamThoughtExpression(
+                thought
+            );
 
             showTranscript(
                 thought,
@@ -2005,6 +2392,184 @@ function showTranscript(
 
 
 /*
+ * Backend reconnect recovery
+ */
+
+function canSafelyReloadAfterBackendRecovery() {
+    return (
+        !isRecording &&
+        !recordingStartPending &&
+        !currentAudio &&
+        !processingTimerEvent &&
+        pendingTimerEvents.length ===
+            0 &&
+        !pendingCaptureAction &&
+        !pendingDeviceAction &&
+        (
+            bmoRenderer.state ===
+                "idle" ||
+            bmoRenderer.state ===
+                "daydream" ||
+            bmoRenderer.state ===
+                "sleepy" ||
+            bmoRenderer.state ===
+                "bored" ||
+            bmoRenderer.state ===
+                "error" ||
+            bmoRenderer.state ===
+                "low_battery"
+        )
+    );
+}
+
+
+function cancelBackendRecoveryReload() {
+    if (
+        backendRecoveryTimer
+    ) {
+        clearTimeout(
+            backendRecoveryTimer
+        );
+
+        backendRecoveryTimer =
+            null;
+    }
+
+    backendRecoveryStartedAt =
+        null;
+}
+
+
+function scheduleBackendRecoveryReload() {
+    if (
+        backendRecoveryTimer
+    ) {
+        return;
+    }
+
+    if (
+        backendRecoveryStartedAt ===
+        null
+    ) {
+        backendRecoveryStartedAt =
+            Date.now();
+    }
+
+    backendRecoveryTimer =
+        setTimeout(
+            () => {
+                backendRecoveryTimer =
+                    null;
+
+                if (
+                    !backendOnline
+                ) {
+                    cancelBackendRecoveryReload();
+
+                    return;
+                }
+
+                const waitedMs =
+                    Date.now() -
+                    backendRecoveryStartedAt;
+
+                if (
+                    !canSafelyReloadAfterBackendRecovery()
+                ) {
+                    if (
+                        waitedMs <
+                        BACKEND_RECOVERY_MAX_WAIT_MS
+                    ) {
+                        scheduleBackendRecoveryReload();
+                    } else {
+                        console.log(
+                            "BMO recovery reload skipped because interaction stayed busy"
+                        );
+
+                        cancelBackendRecoveryReload();
+                    }
+
+                    return;
+                }
+
+                console.log(
+                    "BMO backend recovered after a long outage. Reloading WebView."
+                );
+
+                showStatus(
+                    "BMO brain recovered",
+                    900
+                );
+
+                setTimeout(
+                    () => {
+                        window.location.reload();
+                    },
+                    700
+                );
+            },
+            BACKEND_RECOVERY_RETRY_MS
+        );
+}
+
+
+function softRecoverAfterBackendReconnect() {
+    /*
+     * Clear stale temporary state left behind by a backend outage.
+     * Do not interrupt a live interaction.
+     */
+
+    if (
+        isRecording ||
+        recordingStartPending ||
+        currentAudio
+    ) {
+        return;
+    }
+
+    pendingExpression =
+        null;
+
+    pendingCaptureAction =
+        null;
+
+    pendingDeviceAction =
+        null;
+
+    clearTimeout(
+        expressionTimer
+    );
+
+    expressionTimer =
+        null;
+
+    bmoRenderer.mouthOpen =
+        0;
+
+    if (
+        automaticLowBatteryActive
+    ) {
+        setFaceState(
+            "low_battery"
+        );
+
+    } else {
+        setFaceState(
+            "idle"
+        );
+    }
+
+    resetDaydreamTimer();
+
+    processPendingTimerEvents();
+
+    console.log(
+        "BMO soft reconnect recovery complete"
+    );
+}
+
+
+/*
  * Backend health
  */
 
@@ -2027,24 +2592,52 @@ function setBackendOnline(
     if (
         online
     ) {
+        const outageDuration =
+            backendOfflineSince !==
+                null
+                ? Date.now() -
+                    backendOfflineSince
+                : 0;
+
+        backendOfflineSince =
+            null;
+
+        console.log(
+            "BMO backend reconnected after",
+            outageDuration,
+            "ms"
+        );
+
+        softRecoverAfterBackendReconnect();
+
+        showStatus(
+            "BMO brain reconnected",
+            1800
+        );
+
+        /*
+         * Tiny network hiccups do not justify reloading the whole UI.
+         *
+         * A longer outage does. Once BMO is idle, reload the page so
+         * the WebView, JS state, bridge state, and passive listeners all
+         * get a clean start.
+         */
         if (
-            !isRecording &&
-            bmoRenderer.state !==
-                "speaking"
+            outageDuration >=
+            BACKEND_RECOVERY_RELOAD_AFTER_MS
         ) {
-            setFaceState(
-                "idle"
-            );
+            scheduleBackendRecoveryReload();
 
-            showStatus(
-                "BMO brain reconnected",
-                1800
-            );
-
-            resetDaydreamTimer();
+        } else {
+            cancelBackendRecoveryReload();
         }
 
     } else {
+        backendOfflineSince =
+            Date.now();
+
+        cancelBackendRecoveryReload();
+
         stopDaydream(
             false
         );
@@ -2070,6 +2663,10 @@ function setBackendOnline(
                 0
             );
         }
+
+        console.log(
+            "BMO backend connection lost"
+        );
     }
 }
 
