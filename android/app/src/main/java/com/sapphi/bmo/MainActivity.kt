@@ -183,6 +183,23 @@ class MainActivity : AppCompatActivity() {
     private var wakeSocketConnected =
         false
 
+    /*
+     * Passive wake-word listening should normally recover by itself
+     * when the Mac backend or wake WebSocket disappears.
+     *
+     * This flag is disabled only for intentional wake-system shutdowns
+     * such as push-to-talk, vision capture, Activity pause/destroy, etc.
+     */
+    @Volatile
+    private var wakeAutoReconnectEnabled =
+        false
+
+    /*
+     * Keep at most one delayed wake reconnect scheduled at a time.
+     */
+    private var wakeRearmRunnable: Runnable? =
+        null
+
 
     private val wakeHttpClient =
         OkHttpClient
@@ -561,7 +578,7 @@ class MainActivity : AppCompatActivity() {
             <body>
                 <div>
                     <div class="face">
-                        • _ •
+                        â€¢ _ â€¢
                     </div>
 
                     <div class="message">
@@ -643,7 +660,7 @@ class MainActivity : AppCompatActivity() {
             <body>
                 <div>
                     <div class="face">
-                        • _ •
+                        â€¢ _ â€¢
                     </div>
 
                     <div class="message">
@@ -713,6 +730,13 @@ class MainActivity : AppCompatActivity() {
 
         wakeWordTriggered =
             false
+
+        /*
+         * From this point passive wake listening is expected to remain
+         * available. Unexpected WebSocket closure/failure should rearm it.
+         */
+        wakeAutoReconnectEnabled =
+            true
 
         Log.i(
             WAKE_LOG,
@@ -802,11 +826,55 @@ class MainActivity : AppCompatActivity() {
                         code: Int,
                         reason: String
                     ) {
+                        Log.i(
+                            WAKE_LOG,
+                            "WebSocket CLOSED: code=$code reason=$reason"
+                        )
+
+                        /*
+                         * Ignore callbacks from an older socket that has
+                         * already been intentionally replaced or stopped.
+                         */
+                        if (
+                            wakeWebSocket !==
+                            webSocket
+                        ) {
+                            Log.i(
+                                WAKE_LOG,
+                                "Ignoring close from stale wake socket"
+                            )
+
+                            return
+                        }
+
                         wakeSocketConnected =
                             false
 
                         wakeWebSocket =
                             null
+
+                        stopWakeAudioCapture()
+
+                        /*
+                         * A Uvicorn restart may arrive here as a clean
+                         * WebSocket close instead of onFailure(). This was
+                         * the missing recovery path that left BMO unable to
+                         * hear "Hey BMO" until the Android app restarted.
+                         */
+                        if (
+                            wakeAutoReconnectEnabled &&
+                            bmoPageReady &&
+                            !isRecording
+                        ) {
+                            Log.i(
+                                WAKE_LOG,
+                                "Wake socket closed unexpectedly; scheduling reconnect"
+                            )
+
+                            rearmWakeWord(
+                                3000L
+                            )
+                        }
                     }
 
 
@@ -821,6 +889,22 @@ class MainActivity : AppCompatActivity() {
                             throwable
                         )
 
+                        /*
+                         * Ignore callbacks from a socket that is no longer
+                         * the active passive-listener connection.
+                         */
+                        if (
+                            wakeWebSocket !==
+                            webSocket
+                        ) {
+                            Log.i(
+                                WAKE_LOG,
+                                "Ignoring failure from stale wake socket"
+                            )
+
+                            return
+                        }
+
                         wakeSocketConnected =
                             false
 
@@ -830,9 +914,15 @@ class MainActivity : AppCompatActivity() {
                         stopWakeAudioCapture()
 
                         if (
+                            wakeAutoReconnectEnabled &&
                             bmoPageReady &&
                             !isRecording
                         ) {
+                            Log.i(
+                                WAKE_LOG,
+                                "Wake socket failure; scheduling reconnect"
+                            )
+
                             rearmWakeWord(
                                 3000L
                             )
@@ -1224,23 +1314,32 @@ class MainActivity : AppCompatActivity() {
     ) {
         /*
          * One single place owns the transition back to passive
-         * wake-word listening after command capture, errors, or
-         * no-speech results.
+         * wake-word listening after command capture, errors,
+         * no-speech results, or an unexpected WebSocket disconnect.
          *
          * Resetting wakeWordTriggered here is critical. Without it,
          * a second detection can be ignored until the Activity is
          * recreated.
+         *
+         * Also keep only one delayed rearm pending at a time. When the
+         * backend is offline, repeated connection failures can otherwise
+         * pile up multiple reconnect attempts.
          */
         wakeWordTriggered =
             false
 
-        Log.i(
-            WAKE_LOG,
-            "Scheduling wake-word rearm in ${delayMs}ms"
-        )
+        wakeRearmRunnable
+            ?.let {
+                mainHandler.removeCallbacks(
+                    it
+                )
+            }
 
-        mainHandler.postDelayed(
-            {
+        val runnable =
+            Runnable {
+                wakeRearmRunnable =
+                    null
+
                 if (
                     bmoPageReady &&
                     !isRecording
@@ -1258,7 +1357,18 @@ class MainActivity : AppCompatActivity() {
                         "Wake rearm skipped: pageReady=$bmoPageReady isRecording=$isRecording"
                     )
                 }
-            },
+            }
+
+        wakeRearmRunnable =
+            runnable
+
+        Log.i(
+            WAKE_LOG,
+            "Scheduling wake-word rearm in ${delayMs}ms"
+        )
+
+        mainHandler.postDelayed(
+            runnable,
             delayMs
         )
     }
@@ -1295,13 +1405,36 @@ class MainActivity : AppCompatActivity() {
 
 
     private fun stopWakeWordSystem() {
+        /*
+         * This is an intentional shutdown. Do not let the resulting
+         * WebSocket close/failure callback restart passive listening.
+         */
+        wakeAutoReconnectEnabled =
+            false
+
+        wakeRearmRunnable
+            ?.let {
+                mainHandler.removeCallbacks(
+                    it
+                )
+            }
+
+        wakeRearmRunnable =
+            null
+
         stopWakeAudioCapture()
 
         wakeSocketConnected =
             false
 
-        try {
+        val socket =
             wakeWebSocket
+
+        wakeWebSocket =
+            null
+
+        try {
+            socket
                 ?.close(
                     1000,
                     "Wake listener stopping"
@@ -1311,9 +1444,6 @@ class MainActivity : AppCompatActivity() {
             _: Exception
         ) {
         }
-
-        wakeWebSocket =
-            null
     }
 
 
