@@ -12,16 +12,307 @@ import shutil
 import numpy as np
 import psutil
 import subprocess
+import datetime
+import threading
+import queue
+import re
 
 # Import our new unified core modules
 from core.llm import Brain, strip_prompt_leakage, extract_json_object, sanitize_messages
 from core.tts import play_audio_on_hardware, generate_audio_file, add_pronunciation, load_pronunciations, clean_text_for_speech
 from core.stt import transcribe_audio
-from core.config import LLM_URL, WAKE_WORD_MODEL, WAKE_WORD_THRESHOLD
+from core.config import LLM_URL, FAST_LLM_MODEL, WAKE_WORD_MODEL, WAKE_WORD_THRESHOLD
+from core.timers import parse_timer_request, describe_duration
+from core.search import search_web
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Android BMO persistent conversation memory
+# ---------------------------------------------------------------------------
+# Keep this separate from the legacy desktop agent's memory.json. Android BMO
+# owns this file and persists a small rolling conversation window across
+# WebView/app/backend restarts.
+ANDROID_MEMORY_FILE = "memory_android.json"
+ANDROID_MEMORY_MAX_MESSAGES = 20
+_android_memory_lock = threading.Lock()
+
+_MEMORY_RESET_PHRASES = {
+    "forget everything",
+    "forget our conversation",
+    "reset memory",
+    "clear memory",
+    "clear your memory",
+    "wipe memory",
+    "wipe your memory",
+}
+
+
+def _normalize_memory(history):
+    """Keep only safe role/content chat messages and cap the rolling window."""
+    cleaned = []
+
+    for item in history or []:
+        if not isinstance(item, dict):
+            continue
+
+        role = item.get("role")
+        content = item.get("content")
+
+        if role not in {"user", "assistant"}:
+            continue
+
+        if not isinstance(content, str):
+            continue
+
+        content = content.strip()
+
+        if not content:
+            continue
+
+        cleaned.append(
+            {
+                "role": role,
+                "content": content,
+            }
+        )
+
+    return cleaned[-ANDROID_MEMORY_MAX_MESSAGES:]
+
+
+def load_android_memory():
+    with _android_memory_lock:
+        if not os.path.exists(
+            ANDROID_MEMORY_FILE
+        ):
+            return []
+
+        try:
+            with open(
+                ANDROID_MEMORY_FILE,
+                "r",
+                encoding="utf-8",
+            ) as handle:
+                data = json.load(
+                    handle
+                )
+
+            return _normalize_memory(
+                data
+            )
+
+        except Exception:
+            logger.exception(
+                "Could not load Android BMO memory"
+            )
+
+            return []
+
+
+def save_android_memory(history):
+    cleaned = _normalize_memory(
+        history
+    )
+
+    temporary_file = (
+        ANDROID_MEMORY_FILE +
+        ".tmp"
+    )
+
+    with _android_memory_lock:
+        try:
+            with open(
+                temporary_file,
+                "w",
+                encoding="utf-8",
+            ) as handle:
+                json.dump(
+                    cleaned,
+                    handle,
+                    ensure_ascii=False,
+                    indent=2,
+                )
+
+            os.replace(
+                temporary_file,
+                ANDROID_MEMORY_FILE,
+            )
+
+        except Exception:
+            logger.exception(
+                "Could not save Android BMO memory"
+            )
+
+            try:
+                if os.path.exists(
+                    temporary_file
+                ):
+                    os.remove(
+                        temporary_file
+                    )
+            except Exception:
+                pass
+
+    return cleaned
+
+
+def clear_android_memory():
+    return save_android_memory(
+        []
+    )
+
+
+def get_android_memory_for_request(client_history=None):
+    """
+    Disk is the source of truth after persistence begins.
+
+    If no memory file exists yet, seed it once from the WebView's current
+    conversation history so enabling this feature does not erase the user's
+    already-active conversation.
+    """
+    if os.path.exists(
+        ANDROID_MEMORY_FILE
+    ):
+        return load_android_memory()
+
+    seeded = _normalize_memory(
+        client_history or []
+    )
+
+    if seeded:
+        save_android_memory(
+            seeded
+        )
+
+    return seeded
+
+
+def is_memory_reset_request(text):
+    normalized = (
+        str(text or "")
+        .strip()
+        .lower()
+        .rstrip(".!?")
+    )
+
+    return normalized in _MEMORY_RESET_PHRASES
+
+
+def append_memory_turn(history, user_text, assistant_text):
+    updated = list(
+        history or []
+    )
+
+    updated.append(
+        {
+            "role": "user",
+            "content": str(
+                user_text
+            ).strip(),
+        }
+    )
+
+    updated.append(
+        {
+            "role": "assistant",
+            "content": str(
+                assistant_text
+            ).strip(),
+        }
+    )
+
+    return save_android_memory(
+        updated
+    )
+
+
+# ---------------------------------------------------------------------------
+# Server-side timers
+# ---------------------------------------------------------------------------
+# Timers belong to BMO's Mac brain.  We use threading.Timer because /api/chat
+# is intentionally a synchronous FastAPI handler running in a thread pool.
+#
+# When a timer expires the Mac generates the spoken WAV immediately, then
+# places a small event in this thread-safe queue.  The Android/WebView client
+# can poll /api/timer-events and play it.
+_timer_events = queue.Queue()
+_active_timers = set()
+_timer_lock = threading.Lock()
+
+
+def _timer_finished(timer_id: str, message: str):
+    logger.info(
+        "Timer expired: id=%s message=%r",
+        timer_id,
+        message,
+    )
+
+    audio_url = None
+
+    try:
+        spoken = clean_text_for_speech(message) or message
+        filename = f"response_timer_{uuid.uuid4().hex[:8]}.wav"
+        audio_url = generate_audio_file(
+            spoken,
+            filename,
+        )
+    except Exception:
+        logger.exception(
+            "Failed to generate timer-expiry TTS"
+        )
+
+    _timer_events.put(
+        {
+            "event": "timer_finished",
+            "timer_id": timer_id,
+            "message": message,
+            "audio_url": audio_url,
+        }
+    )
+
+    with _timer_lock:
+        finished = [
+            timer
+            for timer in _active_timers
+            if getattr(timer, "bmo_timer_id", None) == timer_id
+        ]
+
+        for timer in finished:
+            _active_timers.discard(timer)
+
+
+def _schedule_server_timer(minutes: float, message: str) -> str:
+    timer_id = uuid.uuid4().hex[:10]
+    seconds = max(0.0, float(minutes) * 60.0)
+
+    timer = threading.Timer(
+        seconds,
+        _timer_finished,
+        args=(
+            timer_id,
+            message,
+        ),
+    )
+
+    timer.daemon = True
+    timer.bmo_timer_id = timer_id
+
+    with _timer_lock:
+        _active_timers.add(timer)
+
+    timer.start()
+
+    logger.info(
+        "Timer started: id=%s duration=%.4f minutes message=%r",
+        timer_id,
+        minutes,
+        message,
+    )
+
+    return timer_id
+
 
 # Try to load openwakeword for web streaming
 try:
@@ -80,6 +371,290 @@ class PronunciationRequest(BaseModel):
     word: str
     phonetic: str
 
+
+# ---------------------------------------------------------------------------
+# Deterministic web-search routing
+# ---------------------------------------------------------------------------
+# Current/fresh information should not depend on Qwen deciding to call a tool.
+# These patterns intentionally cover explicit search requests and obviously
+# time-sensitive questions. Ordinary evergreen questions still go to Qwen.
+_EXPLICIT_SEARCH_RE = re.compile(
+    r"^\s*(?:"
+    r"search(?:\s+(?:the\s+)?web)?(?:\s+for)?|"
+    r"google|"
+    r"look\s+up|"
+    r"find\s+(?:online|on\s+the\s+web)"
+    r")\s+(?P<query>.+?)\s*$",
+    re.IGNORECASE,
+)
+
+_FRESH_INFO_RE = re.compile(
+    r"\b(?:"
+    r"latest|"
+    r"current|"
+    r"currently|"
+    r"today(?:'s)?|"
+    r"right\s+now|"
+    r"recent|"
+    r"newest|"
+    r"breaking|"
+    r"news|"
+    r"this\s+week|"
+    r"this\s+month"
+    r")\b",
+    re.IGNORECASE,
+)
+
+_FRESH_QUESTION_RE = re.compile(
+    r"^\s*(?:"
+    r"what(?:'s|\s+is)|"
+    r"what\s+happened|"
+    r"tell\s+me|"
+    r"give\s+me|"
+    r"do\s+you\s+know"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def get_pre_llm_search_query(text: str):
+    """
+    Return a search query when the utterance clearly asks for web/current info.
+
+    Explicit search commands always route to search. Freshness words route only
+    when the utterance looks like an information request, which reduces false
+    positives such as "my newest project is working".
+    """
+    if not text:
+        return None
+
+    stripped = text.strip()
+
+    explicit = _EXPLICIT_SEARCH_RE.match(
+        stripped
+    )
+
+    if explicit:
+        query = (
+            explicit.group("query")
+            or ""
+        ).strip()
+
+        return query or None
+
+    if (
+        _FRESH_INFO_RE.search(stripped)
+        and _FRESH_QUESTION_RE.search(stripped)
+    ):
+        return stripped
+
+    return None
+
+
+def perform_web_search_answer(query: str, user_text: str) -> str:
+    """
+    Search using core.search and turn the result into a concise spoken answer.
+    """
+    logger.info(
+        "Searching web for: %r",
+        query,
+    )
+
+    try:
+        search_result = search_web(
+            query
+        )
+
+        if (
+            not search_result
+            or search_result == "SEARCH_EMPTY"
+        ):
+            return (
+                "I searched, but I couldn't find anything useful about that."
+            )
+
+        if search_result == "SEARCH_ERROR":
+            return (
+                "I can't reach the internet right now."
+            )
+
+        logger.info(
+            "Web search succeeded for %r",
+            query,
+        )
+
+        try:
+            summary = _summarize_search_result(
+                search_result,
+                user_text or query,
+            )
+
+            if summary:
+                return summary
+
+        except Exception:
+            logger.exception(
+                "Search result summarization failed"
+            )
+
+        return (
+            "I found something, but I had trouble summarizing it."
+        )
+
+    except Exception:
+        logger.exception(
+            "Web search failed for %r",
+            query,
+        )
+
+        return (
+            "I can't reach the internet right now."
+        )
+
+
+def _summarize_search_result(search_result: str, user_text: str) -> str:
+    """
+    Turn raw search output into a short spoken BMO answer.
+
+    The original desktop agent searches first, then asks the LLM to summarize
+    the real-world result. Keep the same pattern here so Android never has to
+    understand raw search payloads.
+    """
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are BMO, a cute helpful robot assistant. "
+                "Answer the user's question using ONLY the supplied web search "
+                "result. Be concise and natural, usually two to four short "
+                "sentences. Always finish your final sentence. If the result "
+                "does not contain enough information, say that instead of "
+                "inventing facts."
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"USER QUESTION:\n{user_text}\n\n"
+                f"WEB SEARCH RESULT:\n{search_result}"
+            ),
+        },
+    ]
+
+    payload = {
+        "model": FAST_LLM_MODEL,
+        "messages": sanitize_messages(messages),
+        "stream": False,
+        "options": {
+            "temperature": 0.3,
+            "num_predict": 300,
+        },
+    }
+
+    response = requests.post(
+        LLM_URL,
+        json=payload,
+        timeout=60,
+    )
+
+    response.raise_for_status()
+
+    content = (
+        response.json()
+        .get("message", {})
+        .get("content", "")
+        .strip()
+    )
+
+    return strip_prompt_leakage(content).strip()
+
+
+def execute_server_action(action_data, user_text=""):
+    """
+    Execute actions that belong on BMO's Mac brain.
+
+    Android remains a thin body. Tools that need the Mac, internet, local
+    services, or future homelab access should execute here.
+    """
+    raw_action = str(
+        action_data.get(
+            "action",
+            "",
+        )
+    ).lower().strip()
+
+    value = (
+        action_data.get("value")
+        or action_data.get("query")
+        or ""
+    )
+
+    aliases = {
+        "check_time": "get_time",
+        "time": "get_time",
+        "google": "search_web",
+        "browser": "search_web",
+        "news": "search_web",
+        "search_news": "search_web",
+        "web_search": "search_web",
+    }
+
+    action = aliases.get(
+        raw_action,
+        raw_action,
+    )
+
+    logger.info(
+        "Server action requested: %s -> %s",
+        raw_action,
+        action,
+    )
+
+    if action == "get_time":
+        now = datetime.datetime.now().strftime(
+            "%I:%M %p"
+        )
+
+        return {
+            "handled": True,
+            "action": action,
+            "response": (
+                f"The current time is {now}."
+            ),
+        }
+
+    if action == "search_web":
+        query = str(value).strip()
+
+        if not query:
+            logger.warning(
+                "search_web requested without a query"
+            )
+
+            return {
+                "handled": True,
+                "action": action,
+                "response": (
+                    "What would you like me to search for?"
+                ),
+            }
+
+        return {
+            "handled": True,
+            "action": action,
+            "response": perform_web_search_answer(
+                query,
+                user_text or query,
+            ),
+        }
+
+    # Do not silently swallow tools we have not migrated yet.
+    return {
+        "handled": False,
+        "action": action,
+        "response": None,
+    }
+
 @app.get("/")
 async def read_root(request: Request):
     return templates.TemplateResponse(
@@ -118,7 +693,7 @@ async def get_debug_info():
         },
         "logs": []
     }
-    
+
     # Check Hailo/Ollama status
     try:
         # Extract base URL from LLM_URL (e.g., http://127.0.0.1:8000)
@@ -131,7 +706,7 @@ async def get_debug_info():
     except Exception as e:
         info["hailo"]["status"] = "offline"
         info["hailo"]["error"] = str(e)
-        
+
     # Get recent logs from journalctl
     try:
         result = subprocess.run(
@@ -141,8 +716,32 @@ async def get_debug_info():
         info["logs"] = result.stdout.splitlines()
     except Exception as e:
         info["logs"] = [f"Could not fetch logs: {e}"]
-        
+
     return info
+
+
+@app.get("/api/timer-events")
+def get_timer_events():
+    """
+    Return timer expirations waiting for the BMO UI.
+
+    Non-blocking by design. The Android/WebView side can poll this endpoint
+    alongside its existing backend health checks.
+    """
+    events = []
+
+    while True:
+        try:
+            events.append(
+                _timer_events.get_nowait()
+            )
+        except queue.Empty:
+            break
+
+    return {
+        "events": events,
+    }
+
 
 @app.post("/api/chat")
 # Sync def on purpose: brain.think() blocks for tens of seconds on the NPU.
@@ -155,12 +754,213 @@ def chat(request: ChatRequest, background_tasks: BackgroundTasks):
     """
     user_text = request.message
     play_on_hardware = request.play_on_hardware
-    
-    # Initialize brain and load history
-    # persist=False: the browser owns this conversation's history; writing it to
-    # memory.json would clobber the desktop agent's separate memory.
+
+    persistent_history = get_android_memory_for_request(
+        request.history
+    )
+
+    # Memory reset is deterministic and scoped only to Android BMO.
+    if is_memory_reset_request(
+        user_text
+    ):
+        clear_android_memory()
+
+        response_text = (
+            "Okay. I forgot our conversation history."
+        )
+
+        logger.info(
+            "Android BMO memory cleared by voice request"
+        )
+
+        audio_url = None
+        tts_content = (
+            clean_text_for_speech(
+                response_text
+            )
+            or response_text
+        )
+
+        background_tasks.add_task(
+            _cleanup_old_audio
+        )
+
+        if play_on_hardware:
+            background_tasks.add_task(
+                play_audio_on_hardware,
+                tts_content,
+            )
+        else:
+            filename = (
+                f"response_{uuid.uuid4().hex[:8]}.wav"
+            )
+
+            audio_url = generate_audio_file(
+                tts_content,
+                filename,
+            )
+
+        return {
+            "response": response_text,
+            "history": [],
+            "audio_url": audio_url,
+            "action": {
+                "type": "memory_cleared",
+            },
+        }
+
+    # ------------------------------------------------------------------
+    # Deterministic timer/reminder routing
+    # ------------------------------------------------------------------
+    # Do this BEFORE Qwen. core/timers.py deliberately owns duration parsing
+    # so "30 seconds" can never become "30 minutes" because of model output.
+    timer_request = parse_timer_request(
+        user_text
+    )
+
+    if timer_request:
+        minutes = timer_request["minutes"]
+        timer_message = timer_request["message"]
+
+        timer_id = _schedule_server_timer(
+            minutes,
+            timer_message,
+        )
+
+        duration_text = describe_duration(
+            minutes
+        )
+
+        response_text = (
+            f"Okay! Timer set for {duration_text}."
+        )
+
+        logger.info(
+            "Timer request handled before LLM: %r -> %s (%s)",
+            user_text,
+            duration_text,
+            timer_id,
+        )
+
+        # Keep browser/Android conversation history coherent even though the
+        # LLM was intentionally skipped for this turn.
+        response_history = append_memory_turn(
+            persistent_history,
+            user_text,
+            response_text,
+        )
+
+        audio_url = None
+        tts_content = (
+            clean_text_for_speech(
+                response_text
+            )
+            or response_text
+        )
+
+        background_tasks.add_task(
+            _cleanup_old_audio
+        )
+
+        if play_on_hardware:
+            background_tasks.add_task(
+                play_audio_on_hardware,
+                tts_content,
+            )
+        else:
+            filename = (
+                f"response_{uuid.uuid4().hex[:8]}.wav"
+            )
+
+            audio_url = generate_audio_file(
+                tts_content,
+                filename,
+            )
+
+        return {
+            "response": response_text,
+            "history": response_history,
+            "audio_url": audio_url,
+            "action": {
+                "type": "timer_set",
+                "timer_id": timer_id,
+                "minutes": minutes,
+                "message": timer_message,
+            },
+        }
+
+    # ------------------------------------------------------------------
+    # Deterministic current-info / explicit web-search routing
+    # ------------------------------------------------------------------
+    # Do this before Qwen so fresh-information requests cannot be answered
+    # from stale model knowledge merely because the model chose a different
+    # action such as set_expression.
+    search_query = get_pre_llm_search_query(
+        user_text
+    )
+
+    if search_query:
+        logger.info(
+            "Pre-LLM web search matched: %r -> %r",
+            user_text,
+            search_query,
+        )
+
+        response_text = perform_web_search_answer(
+            search_query,
+            user_text,
+        )
+
+        response_history = append_memory_turn(
+            persistent_history,
+            user_text,
+            response_text,
+        )
+
+        audio_url = None
+        tts_content = (
+            clean_text_for_speech(
+                response_text
+            )
+            or response_text
+        )
+
+        background_tasks.add_task(
+            _cleanup_old_audio
+        )
+
+        if play_on_hardware:
+            background_tasks.add_task(
+                play_audio_on_hardware,
+                tts_content,
+            )
+        else:
+            filename = (
+                f"response_{uuid.uuid4().hex[:8]}.wav"
+            )
+
+            audio_url = generate_audio_file(
+                tts_content,
+                filename,
+            )
+
+        return {
+            "response": response_text,
+            "history": response_history,
+            "audio_url": audio_url,
+            "action": {
+                "type": "web_search",
+                "query": search_query,
+            },
+        }
+
+    # Initialize a non-persistent Brain because Android BMO now owns its own
+    # persistence layer in memory_android.json. This avoids touching the legacy
+    # desktop agent's memory.json while still preserving context across restarts.
     brain = Brain(persist=False)
-    brain.set_history(request.history)
+    brain.set_history(
+        persistent_history
+    )
 
     # If an image is provided, use the vision model
     if request.image:
@@ -169,30 +969,86 @@ def chat(request: ChatRequest, background_tasks: BackgroundTasks):
     else:
         # Get response from LLM (includes keyword-triggered search and camera detection)
         content = brain.think(user_text)
-    
+
     # Check if there was an error
     if content.startswith("Error:") or content.startswith("Could not connect") or content.startswith("I'm having trouble"):
-        return {"error": content, "history": brain.get_history()}
+        return {
+            "error": content,
+            "history": persistent_history,
+        }
 
-    # Action detection — content may now be `<lead-in text> <JSON>` (round-3
-    # change in core/llm.py) so json.loads on the whole string fails.  Use
-    # the brace-balanced extractor.  We keep the JSON in `content` so the
-    # client can dispatch the action, but generate TTS only for the lead-in
-    # (skip TTS entirely for pure-JSON responses).
+    # Action detection.
+    #
+    # Historically the web endpoint returned action JSON to the client and
+    # expected the browser/desktop UI to execute it. Android should stay a
+    # thin BMO body, so Mac-side tools are now executed here instead.
+    #
+    # For this first bridge only get_time is migrated. Unknown/unmigrated
+    # actions retain the old client-dispatch behaviour.
     is_action = False
     spoken_text = content
     action_data, span = extract_json_object(content)
+
     if action_data and "action" in action_data:
-        lead_in_text = (content[:span[0]] + content[span[1]:]).strip()
-        if lead_in_text:
-            # Pre-routed action with verbal lead-in: speak the lead-in, but
-            # let the client see the full payload (JSON included) for dispatch.
-            spoken_text = lead_in_text
-            logger.info(f"Action+lead-in: TTS={spoken_text[:40]!r} action={action_data.get('action')}")
+        lead_in_text = (
+            content[:span[0]] +
+            content[span[1]:]
+        ).strip()
+
+        action_result = execute_server_action(
+            action_data,
+            user_text=user_text,
+        )
+
+        if action_result["handled"]:
+            content = action_result["response"]
+            spoken_text = content
+            is_action = False
+
+            logger.info(
+                "Server action completed: %s -> %r",
+                action_result["action"],
+                content,
+            )
+
+            # brain.think() has already recorded the model's raw action JSON
+            # in its temporary history. Replace that final assistant message
+            # in the response history with the human-readable tool result so
+            # the Android/browser conversation stays clean.
+            response_history = brain.get_history()
+            if (
+                response_history and
+                isinstance(response_history[-1], dict) and
+                response_history[-1].get("role") == "assistant"
+            ):
+                response_history[-1] = {
+                    "role": "assistant",
+                    "content": content,
+                }
         else:
-            # Pure JSON response — no TTS
-            is_action = True
-            logger.info(f"Action response detected: {action_data.get('action')} — skipping TTS")
+            response_history = brain.get_history()
+
+            if lead_in_text:
+                # Existing behaviour for tools not migrated yet:
+                # speak the lead-in but leave the action JSON in the response
+                # so older clients can still dispatch it.
+                spoken_text = lead_in_text
+
+                logger.info(
+                    "Unmigrated action+lead-in: TTS=%r action=%s",
+                    spoken_text[:40],
+                    action_data.get("action"),
+                )
+            else:
+                # Pure JSON response for an unmigrated action.
+                is_action = True
+
+                logger.info(
+                    "Unmigrated action response detected: %s; skipping TTS",
+                    action_data.get("action"),
+                )
+    else:
+        response_history = brain.get_history()
 
     audio_url = None
 
@@ -214,10 +1070,36 @@ def chat(request: ChatRequest, background_tasks: BackgroundTasks):
             filename = f"response_{uuid.uuid4().hex[:8]}.wav"
             audio_url = generate_audio_file(tts_content, filename)
 
+    response_history = save_android_memory(
+        response_history
+    )
+
     return {
         "response": content,
-        "history": brain.get_history(),
+        "history": response_history,
         "audio_url": audio_url
+    }
+
+
+@app.get("/api/memory")
+def get_android_memory_status():
+    """Small diagnostics endpoint for Android BMO's rolling memory."""
+    history = load_android_memory()
+
+    return {
+        "messages": len(history),
+        "max_messages": ANDROID_MEMORY_MAX_MESSAGES,
+        "file": ANDROID_MEMORY_FILE,
+    }
+
+
+@app.post("/api/memory/clear")
+def clear_android_memory_endpoint():
+    """Explicit API reset for diagnostics / future settings UI."""
+    clear_android_memory()
+
+    return {
+        "status": "cleared",
     }
 
 
@@ -230,15 +1112,15 @@ def transcribe(audio: UploadFile = File(...)):
     """
     temp_filename = f"temp_{uuid.uuid4().hex}.webm"
     temp_filepath = os.path.join("static", "audio", temp_filename)
-    
+
     try:
         # Save the uploaded file
         with open(temp_filepath, "wb") as buffer:
             shutil.copyfileobj(audio.file, buffer)
-            
+
         # Transcribe it
         text = transcribe_audio(temp_filepath)
-        
+
         return {"text": text}
     except Exception as e:
         logger.error(f"Transcription endpoint error: {e}")
@@ -267,13 +1149,13 @@ async def websocket_wakeword(websocket: WebSocket):
         while True:
             # Receive binary audio data (Int16 PCM)
             data = await websocket.receive_bytes()
-            
+
             # Convert bytes to numpy array
             audio_chunk = np.frombuffer(data, dtype=np.int16)
-            
+
             # Feed to openwakeword
             oww_model.predict(audio_chunk)
-            
+
             # Check predictions
             for key in oww_model.prediction_buffer.keys():
                 if oww_model.prediction_buffer[key][-1] > WAKE_WORD_THRESHOLD:
@@ -281,7 +1163,7 @@ async def websocket_wakeword(websocket: WebSocket):
                     await websocket.send_json({"event": "wakeword_detected", "model": key})
                     oww_model.reset()
                     break # Only trigger once per chunk
-                    
+
     except WebSocketDisconnect:
         logger.info("WebSocket disconnected")
     except Exception as e:
@@ -408,7 +1290,7 @@ def get_screensaver_thought():
                     topic = random.choice(search_topics)
                 else:
                     break
-        
+
         logger.info(f"[SCREENSAVER-WEB] Pondering about: {topic}")
         search_result = search_web(topic)
 
@@ -497,3 +1379,4 @@ if __name__ == "__main__":
         logger.info("No SSL certificates found. Starting on HTTP...")
         # Run on all interfaces (0.0.0.0) so it can be accessed from other machines on the network
         uvicorn.run("web_app:app", host="0.0.0.0", port=8080, workers=2)
+
