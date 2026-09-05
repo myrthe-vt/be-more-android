@@ -6034,3 +6034,2414 @@ console.log(
 // END BMO HIDDEN DEVELOPER PANEL
 // ============================================================================
 
+
+
+/* === BMO CRITTER OVERLAY SYSTEM === */
+
+/*
+ * BMO Critter Overlay
+ *
+ * Critters are independent decorations layered over BMO's normal face.
+ *
+ * Movement uses "structured randomness":
+ *
+ *   - each critter has several recognizable path archetypes
+ *   - an archetype is selected using weighted randomness
+ *   - each path receives small random variations
+ *   - speed, rotation and scale vary each appearance
+ *   - some paths contain deliberate pauses
+ *
+ * This keeps them unpredictable without turning them into random
+ * screensaver objects.
+ */
+
+class BMOCritterOverlay {
+    constructor() {
+        this.layer = null;
+        this.active = new Set();
+        this.counter = 0;
+
+        this.assets = {
+            bee: "/static/critter_assets/bee.svg",
+            ladybug: "/static/critter_assets/ladybug.svg",
+            worm: "/static/critter_assets/worm.svg",
+        };
+
+        this.ensureLayer();
+
+        window.addEventListener("resize", () => {
+            this.clear();
+        });
+    }
+
+    ensureLayer() {
+        if (
+            this.layer &&
+            document.body.contains(this.layer)
+        ) {
+            return this.layer;
+        }
+
+        let layer =
+            document.getElementById(
+                "bmo-critter-layer"
+            );
+
+        if (!layer) {
+            layer =
+                document.createElement(
+                    "div"
+                );
+
+            layer.id =
+                "bmo-critter-layer";
+
+            Object.assign(
+                layer.style,
+                {
+                    position: "fixed",
+                    inset: "0",
+                    width: "100vw",
+                    height: "100vh",
+                    overflow: "hidden",
+                    pointerEvents: "none",
+                    zIndex: "20",
+                    contain: "layout paint",
+                }
+            );
+
+            document.body.appendChild(
+                layer
+            );
+        }
+
+        this.layer = layer;
+
+        return layer;
+    }
+
+    viewport() {
+        const vv =
+            window.visualViewport;
+
+        return {
+            width:
+                vv?.width ||
+                window.innerWidth,
+
+            height:
+                vv?.height ||
+                window.innerHeight,
+        };
+    }
+
+    random(min, max) {
+        return (
+            min +
+            Math.random() *
+                (max - min)
+        );
+    }
+
+    randomInt(min, max) {
+        return Math.floor(
+            this.random(
+                min,
+                max + 1
+            )
+        );
+    }
+
+    chance(probability) {
+        return (
+            Math.random() <
+            probability
+        );
+    }
+
+    clamp(value, min, max) {
+        return Math.max(
+            min,
+            Math.min(
+                max,
+                value
+            )
+        );
+    }
+
+    weightedChoice(options) {
+        /*
+         * Example:
+         *
+         * [
+         *   ["normal", 60],
+         *   ["dramatic", 10],
+         * ]
+         */
+
+        const total =
+            options.reduce(
+                (sum, option) =>
+                    sum +
+                    option[1],
+                0
+            );
+
+        let pick =
+            Math.random() *
+            total;
+
+        for (
+            const [value, weight]
+            of options
+        ) {
+            pick -= weight;
+
+            if (pick <= 0) {
+                return value;
+            }
+        }
+
+        return options[
+            options.length - 1
+        ][0];
+    }
+
+    point(
+        viewport,
+        xRatio,
+        yRatio
+    ) {
+        return {
+            x:
+                viewport.width *
+                xRatio,
+
+            y:
+                viewport.height *
+                yRatio,
+        };
+    }
+
+    async spawn(type) {
+        type =
+            String(type || "")
+                .toLowerCase();
+
+        if (
+            !this.assets[type]
+        ) {
+            console.warn(
+                "Unknown BMO critter:",
+                type
+            );
+
+            return null;
+        }
+
+        this.ensureLayer();
+
+        const img =
+            document.createElement(
+                "img"
+            );
+
+        img.src =
+            this.assets[type];
+
+        img.alt = "";
+
+        img.setAttribute(
+            "aria-hidden",
+            "true"
+        );
+
+        img.dataset.critterType =
+            type;
+
+        img.dataset.critterId =
+            `${type}-${++this.counter}`;
+
+        Object.assign(
+            img.style,
+            {
+                position: "absolute",
+                left: "0",
+                top: "0",
+                display: "block",
+                height: "auto",
+                pointerEvents: "none",
+                userSelect: "none",
+                WebkitUserDrag:
+                    "none",
+                transformOrigin:
+                    "50% 50%",
+                willChange:
+                    "transform, opacity",
+            }
+        );
+
+        switch (type) {
+            case "bee":
+                img.style.width =
+                    "min(31vh, 28vw)";
+                break;
+
+            case "ladybug":
+                img.style.width =
+                    "min(26vh, 23vw)";
+                break;
+
+            case "worm":
+                img.style.width =
+                    "min(36vh, 32vw)";
+                break;
+        }
+
+        this.layer.appendChild(
+            img
+        );
+
+        this.active.add(img);
+
+        await this.waitForImage(
+            img
+        );
+
+        if (
+            !document.body.contains(
+                img
+            )
+        ) {
+            return null;
+        }
+
+        this.animate(
+            img,
+            type
+        );
+
+        return img;
+    }
+
+    waitForImage(img) {
+        if (img.complete) {
+            return Promise.resolve();
+        }
+
+        return new Promise(
+            (resolve) => {
+                const done =
+                    () => resolve();
+
+                img.addEventListener(
+                    "load",
+                    done,
+                    {
+                        once: true,
+                    }
+                );
+
+                img.addEventListener(
+                    "error",
+                    done,
+                    {
+                        once: true,
+                    }
+                );
+            }
+        );
+    }
+
+    animate(img, type) {
+        switch (type) {
+            case "bee":
+                this.animateBee(
+                    img
+                );
+                break;
+
+            case "ladybug":
+                this.animateLadybug(
+                    img
+                );
+                break;
+
+            case "worm":
+                this.animateWorm(
+                    img
+                );
+                break;
+        }
+    }
+
+    /* --------------------------------------------------------
+     * BEE
+     * --------------------------------------------------------
+     *
+     * Bee personalities:
+     *
+     * normalSweep    45%
+     * shallowDip     23%
+     * hoverBuzz      17%
+     * dramaticSwoop  10%
+     * chaosBuzz       5%
+     */
+
+    animateBee(img) {
+        const v =
+            this.viewport();
+
+        const rect =
+            img.getBoundingClientRect();
+
+        const w =
+            rect.width || 120;
+
+        const h =
+            rect.height || 120;
+
+        const direction =
+            this.chance(0.5)
+                ? 1
+                : -1;
+
+        const archetype =
+            this.weightedChoice([
+                [
+                    "normalSweep",
+                    45,
+                ],
+                [
+                    "shallowDip",
+                    23,
+                ],
+                [
+                    "hoverBuzz",
+                    17,
+                ],
+                [
+                    "dramaticSwoop",
+                    10,
+                ],
+                [
+                    "chaosBuzz",
+                    5,
+                ],
+            ]);
+
+        let points =
+            [];
+
+        switch (archetype) {
+            case "normalSweep":
+                points =
+                    this.beeNormalSweep(
+                        v,
+                        w,
+                        h
+                    );
+                break;
+
+            case "shallowDip":
+                points =
+                    this.beeShallowDip(
+                        v,
+                        w,
+                        h
+                    );
+                break;
+
+            case "hoverBuzz":
+                points =
+                    this.beeHoverBuzz(
+                        v,
+                        w,
+                        h
+                    );
+                break;
+
+            case "dramaticSwoop":
+                points =
+                    this.beeDramaticSwoop(
+                        v,
+                        w,
+                        h
+                    );
+                break;
+
+            case "chaosBuzz":
+                points =
+                    this.beeChaosBuzz(
+                        v,
+                        w,
+                        h
+                    );
+                break;
+        }
+
+        if (
+            direction === -1
+        ) {
+            /*
+             * Mirror the bee path horizontally rather than reversing
+             * the keyframe array.
+             *
+             * Every bee point already contains an explicit animation
+             * offset from 0 -> 1. Reversing the array also reversed
+             * those offsets to 1 -> 0, which causes Web Animations to
+             * reject/freeze the animation in some WebViews.
+             */
+            for (
+                const p
+                of points
+            ) {
+                p.x =
+                    v.width -
+                    p.x -
+                    w * 0.05;
+            }
+        }
+
+        const duration =
+            archetype ===
+            "chaosBuzz"
+                ? this.random(
+                    6500,
+                    8000
+                )
+                : this.random(
+                    8000,
+                    11000
+                );
+
+        const frames =
+            [];
+
+        for (
+            let i = 0;
+            i < points.length;
+            i++
+        ) {
+            const p =
+                points[i];
+
+            const rotation =
+                this.random(
+                    -13,
+                    13
+                );
+
+            const scale =
+                this.random(
+                    0.95,
+                    1.07
+                );
+
+            frames.push({
+                offset:
+                    p.offset,
+
+                transform:
+                    `translate3d(${p.x}px, ${p.y}px, 0) ` +
+                    `rotate(${rotation}deg) ` +
+                    `scale(${scale})`,
+
+                opacity:
+                    p.opacity ??
+                    1,
+            });
+        }
+
+        const animation =
+            img.animate(
+                frames,
+                {
+                    duration,
+                    easing:
+                        "cubic-bezier(.42,.02,.58,.98)",
+                    fill:
+                        "forwards",
+                }
+            );
+
+        console.log(
+            "BMO bee path:",
+            archetype
+        );
+
+        this.finishAfter(
+            img,
+            animation
+        );
+    }
+
+    beeNormalSweep(
+        v,
+        w,
+        h
+    ) {
+        const count =
+            this.randomInt(
+                6,
+                8
+            );
+
+        const points =
+            [];
+
+        for (
+            let i = 0;
+            i < count;
+            i++
+        ) {
+            const t =
+                i /
+                (count - 1);
+
+            let x =
+                -w * 0.65 +
+                (
+                    v.width +
+                    w * 1.05
+                ) *
+                    t;
+
+            let y =
+                -h *
+                    this.random(
+                        0.30,
+                        0.10
+                    ) +
+                Math.sin(
+                    t *
+                        Math.PI *
+                        this.random(
+                            2.5,
+                            4
+                        )
+                ) *
+                    v.height *
+                    this.random(
+                        0.04,
+                        0.09
+                    );
+
+            y +=
+                this.random(
+                    -12,
+                    12
+                );
+
+            points.push({
+                x,
+                y,
+                offset: t,
+                opacity:
+                    i === 0 ||
+                    i === count - 1
+                        ? 0
+                        : 1,
+            });
+        }
+
+        return points;
+    }
+
+    beeShallowDip(
+        v,
+        w,
+        h
+    ) {
+        const dip =
+            this.random(
+                0.18,
+                0.32
+            );
+
+        return [
+            {
+                x:
+                    -w *
+                    0.65,
+
+                y:
+                    -h *
+                    0.32,
+
+                offset: 0,
+                opacity: 0,
+            },
+
+            {
+                x:
+                    v.width *
+                    0.16,
+
+                y:
+                    -h *
+                    0.12,
+
+                offset: 0.16,
+            },
+
+            {
+                x:
+                    v.width *
+                    0.32,
+
+                y:
+                    v.height *
+                    this.random(
+                        0.03,
+                        0.10
+                    ),
+
+                offset: 0.32,
+            },
+
+            {
+                x:
+                    v.width *
+                    0.50,
+
+                y:
+                    v.height *
+                    dip,
+
+                offset: 0.50,
+            },
+
+            {
+                x:
+                    v.width *
+                    0.67,
+
+                y:
+                    v.height *
+                    this.random(
+                        0.04,
+                        0.11
+                    ),
+
+                offset: 0.70,
+            },
+
+            {
+                x:
+                    v.width *
+                    0.84,
+
+                y:
+                    -h *
+                    0.10,
+
+                offset: 0.86,
+            },
+
+            {
+                x:
+                    v.width +
+                    w *
+                    0.30,
+
+                y:
+                    -h *
+                    0.30,
+
+                offset: 1,
+                opacity: 0,
+            },
+        ];
+    }
+
+    beeHoverBuzz(
+        v,
+        w,
+        h
+    ) {
+        const hoverX =
+            v.width *
+            this.random(
+                0.25,
+                0.72
+            );
+
+        const hoverY =
+            this.random(
+                -h * 0.12,
+                v.height *
+                    0.06
+            );
+
+        return [
+            {
+                x:
+                    -w *
+                    0.60,
+
+                y:
+                    -h *
+                    0.25,
+
+                offset: 0,
+                opacity: 0,
+            },
+
+            {
+                x:
+                    hoverX -
+                    v.width *
+                    0.18,
+
+                y:
+                    hoverY +
+                    15,
+
+                offset: 0.20,
+            },
+
+            {
+                x:
+                    hoverX -
+                    15,
+
+                y:
+                    hoverY -
+                    8,
+
+                offset: 0.35,
+            },
+
+            {
+                x:
+                    hoverX +
+                    12,
+
+                y:
+                    hoverY +
+                    10,
+
+                offset: 0.44,
+            },
+
+            {
+                x:
+                    hoverX -
+                    10,
+
+                y:
+                    hoverY -
+                    6,
+
+                offset: 0.53,
+            },
+
+            {
+                x:
+                    hoverX +
+                    8,
+
+                y:
+                    hoverY +
+                    5,
+
+                offset: 0.62,
+            },
+
+            {
+                x:
+                    hoverX +
+                    v.width *
+                    0.20,
+
+                y:
+                    hoverY -
+                    20,
+
+                offset: 0.78,
+            },
+
+            {
+                x:
+                    v.width +
+                    w *
+                    0.35,
+
+                y:
+                    -h *
+                    0.25,
+
+                offset: 1,
+                opacity: 0,
+            },
+        ];
+    }
+
+    beeDramaticSwoop(
+        v,
+        w,
+        h
+    ) {
+        return [
+            {
+                x:
+                    -w *
+                    0.70,
+
+                y:
+                    -h *
+                    0.40,
+
+                offset: 0,
+                opacity: 0,
+            },
+
+            {
+                x:
+                    v.width *
+                    0.15,
+
+                y:
+                    -h *
+                    0.08,
+
+                offset: 0.16,
+            },
+
+            {
+                x:
+                    v.width *
+                    0.34,
+
+                y:
+                    v.height *
+                    0.12,
+
+                offset: 0.30,
+            },
+
+            {
+                x:
+                    v.width *
+                    0.48,
+
+                y:
+                    v.height *
+                    this.random(
+                        0.30,
+                        0.42
+                    ),
+
+                offset: 0.48,
+            },
+
+            {
+                x:
+                    v.width *
+                    0.61,
+
+                y:
+                    v.height *
+                    0.17,
+
+                offset: 0.66,
+            },
+
+            {
+                x:
+                    v.width *
+                    0.79,
+
+                y:
+                    -h *
+                    0.03,
+
+                offset: 0.83,
+            },
+
+            {
+                x:
+                    v.width +
+                    w *
+                    0.35,
+
+                y:
+                    -h *
+                    0.35,
+
+                offset: 1,
+                opacity: 0,
+            },
+        ];
+    }
+
+    beeChaosBuzz(
+        v,
+        w,
+        h
+    ) {
+        const points =
+            [];
+
+        const count =
+            this.randomInt(
+                9,
+                12
+            );
+
+        for (
+            let i = 0;
+            i < count;
+            i++
+        ) {
+            const t =
+                i /
+                (count - 1);
+
+            points.push({
+                x:
+                    -w *
+                        0.60 +
+                    (
+                        v.width +
+                        w
+                    ) *
+                        t +
+                    this.random(
+                        -35,
+                        35
+                    ),
+
+                y:
+                    this.random(
+                        -h *
+                            0.30,
+                        v.height *
+                            0.20
+                    ),
+
+                offset: t,
+
+                opacity:
+                    i === 0 ||
+                    i === count - 1
+                        ? 0
+                        : 1,
+            });
+        }
+
+        return points;
+    }
+
+    /* --------------------------------------------------------
+     * LADYBUG
+     * --------------------------------------------------------
+     *
+     * Ladybug behavior:
+     *
+     * straightCrawl  50%
+     * pauseAndGo     25%
+     * littleClimb    15%
+     * changeMind     10%
+     */
+
+    animateLadybug(img) {
+        const v =
+            this.viewport();
+
+        const rect =
+            img.getBoundingClientRect();
+
+        const w =
+            rect.width || 100;
+
+        const h =
+            rect.height || 100;
+
+        const direction =
+            this.chance(0.5)
+                ? 1
+                : -1;
+
+        const archetype =
+            this.weightedChoice([
+                [
+                    "straightCrawl",
+                    50,
+                ],
+                [
+                    "pauseAndGo",
+                    25,
+                ],
+                [
+                    "littleClimb",
+                    15,
+                ],
+                [
+                    "changeMind",
+                    10,
+                ],
+            ]);
+
+        /*
+         * Keep the ladybug near the lower edge, but slightly more visible.
+         */
+        const baseY =
+            v.height -
+            h *
+                this.random(
+                    0.68,
+                    0.84
+                );
+
+        let points;
+
+        switch (archetype) {
+            case "pauseAndGo":
+                points =
+                    this.ladybugPause(
+                        v,
+                        w,
+                        h,
+                        baseY
+                    );
+                break;
+
+            case "littleClimb":
+                points =
+                    this.ladybugClimb(
+                        v,
+                        w,
+                        h,
+                        baseY
+                    );
+                break;
+
+            case "changeMind":
+                points =
+                    this.ladybugChangeMind(
+                        v,
+                        w,
+                        h,
+                        baseY
+                    );
+                break;
+
+            default:
+                points =
+                    this.ladybugStraight(
+                        v,
+                        w,
+                        h,
+                        baseY
+                    );
+        }
+
+        if (
+            direction === -1
+        ) {
+            for (
+                const p
+                of points
+            ) {
+                p.x =
+                    v.width -
+                    p.x -
+                    w *
+                        0.05;
+            }
+        }
+
+        const frames =
+            points.map(
+                (p, index) => ({
+                    offset:
+                        p.offset,
+
+                    transform:
+                        `translate3d(${p.x}px, ${p.y}px, 0) ` +
+                        `rotate(${p.rotation ?? this.random(-5, 5)}deg) ` +
+                        `scale(${p.scale ?? this.random(0.98, 1.03)})`,
+
+                    opacity:
+                        p.opacity ??
+                        1,
+                })
+            );
+
+        const animation =
+            img.animate(
+                frames,
+                {
+                    /*
+                     * Ladybugs are deliberate little walkers.
+                     * Keep them noticeably slower than the bee.
+                     */
+                    duration:
+                        this.random(
+                            14000,
+                            20000
+                        ),
+
+                    easing:
+                        "ease-in-out",
+
+                    fill:
+                        "forwards",
+                }
+            );
+
+        console.log(
+            "BMO ladybug path:",
+            archetype
+        );
+
+        this.finishAfter(
+            img,
+            animation
+        );
+    }
+
+    ladybugStraight(
+        v,
+        w,
+        h,
+        y
+    ) {
+        /*
+         * The common ladybug path is deliberately quite busy.
+         *
+         * Instead of gliding through a handful of large waypoints,
+         * she crawls through lots of short uneven steps.
+         *
+         * Small backwards movements and vertical wandering make the
+         * movement feel exploratory rather than mechanically linear.
+         */
+
+        const points = [];
+
+        const count =
+            this.randomInt(
+                11,
+                15
+            );
+
+        let previousY = y;
+
+        for (
+            let i = 0;
+            i < count;
+            i++
+        ) {
+            const t =
+                i /
+                (count - 1);
+
+            let x =
+                -w * 0.60 +
+                (
+                    v.width +
+                    w * 0.95
+                ) *
+                    t;
+
+            /*
+             * Occasionally hesitate or take a tiny backwards step.
+             */
+            if (
+                i > 1 &&
+                i < count - 2 &&
+                this.chance(0.20)
+            ) {
+                x -=
+                    this.random(
+                        12,
+                        38
+                    );
+            }
+
+            /*
+             * Wander around the lower part of the screen rather than
+             * staying on one perfectly horizontal rail.
+             */
+            previousY +=
+                this.random(
+                    -14,
+                    14
+                );
+
+            const minY =
+                y -
+                h * 0.32;
+
+            const maxY =
+                y +
+                h * 0.15;
+
+            previousY =
+                this.clamp(
+                    previousY,
+                    minY,
+                    maxY
+                );
+
+            /*
+             * Occasionally climb noticeably farther upwards.
+             */
+            if (
+                i > 1 &&
+                i < count - 2 &&
+                this.chance(0.13)
+            ) {
+                previousY -=
+                    h *
+                    this.random(
+                        0.08,
+                        0.18
+                    );
+            }
+
+            points.push({
+                x,
+                y: previousY,
+                offset: t,
+
+                rotation:
+                    this.random(
+                        -8,
+                        8
+                    ),
+
+                scale:
+                    this.random(
+                        0.97,
+                        1.035
+                    ),
+
+                opacity:
+                    i === 0 ||
+                    i === count - 1
+                        ? 0
+                        : 1,
+            });
+        }
+
+        return points;
+    }
+
+    ladybugPause(
+        v,
+        w,
+        h,
+        y
+    ) {
+        /*
+         * Crawl in lots of small movements, then stop and inspect the
+         * world for a moment before continuing.
+         */
+
+        const points = [];
+
+        const count =
+            this.randomInt(
+                11,
+                14
+            );
+
+        const pauseIndex =
+            this.randomInt(
+                4,
+                count - 5
+            );
+
+        let currentY = y;
+
+        for (
+            let i = 0;
+            i < count;
+            i++
+        ) {
+            const t =
+                i /
+                (count - 1);
+
+            let x =
+                -w * 0.60 +
+                (
+                    v.width +
+                    w * 0.95
+                ) *
+                    t;
+
+            currentY +=
+                this.random(
+                    -13,
+                    13
+                );
+
+            currentY =
+                this.clamp(
+                    currentY,
+                    y - h * 0.30,
+                    y + h * 0.14
+                );
+
+            /*
+             * Tiny backwards movements are allowed during normal crawl.
+             */
+            if (
+                i > 1 &&
+                i < count - 2 &&
+                this.chance(0.16)
+            ) {
+                x -=
+                    this.random(
+                        10,
+                        30
+                    );
+            }
+
+            /*
+             * When we reach the chosen pause point, insert several
+             * almost-identical keyframes. This creates a real pause,
+             * but with a tiny amount of curious body movement.
+             */
+            if (
+                i === pauseIndex
+            ) {
+                const beforeOffset =
+                    Math.max(
+                        0,
+                        t - 0.015
+                    );
+
+                const afterOffset =
+                    Math.min(
+                        1,
+                        t + 0.13
+                    );
+
+                points.push({
+                    x,
+                    y: currentY,
+                    offset:
+                        beforeOffset,
+                    rotation:
+                        -2,
+                });
+
+                points.push({
+                    x: x + 1,
+                    y:
+                        currentY -
+                        2,
+                    offset:
+                        t + 0.04,
+                    rotation:
+                        3,
+                    scale:
+                        1.015,
+                });
+
+                points.push({
+                    x: x - 1,
+                    y:
+                        currentY +
+                        1,
+                    offset:
+                        afterOffset,
+                    rotation:
+                        -1,
+                });
+
+                continue;
+            }
+
+            points.push({
+                x,
+                y: currentY,
+                offset: t,
+
+                rotation:
+                    this.random(
+                        -7,
+                        7
+                    ),
+
+                scale:
+                    this.random(
+                        0.975,
+                        1.03
+                    ),
+
+                opacity:
+                    i === 0 ||
+                    i === count - 1
+                        ? 0
+                        : 1,
+            });
+        }
+
+        /*
+         * Sort because the inserted pause keyframes use slightly
+         * adjusted offsets.
+         */
+        points.sort(
+            (a, b) =>
+                a.offset -
+                b.offset
+        );
+
+        return points;
+    }
+
+    ladybugClimb(
+        v,
+        w,
+        h,
+        y
+    ) {
+        return [
+            {
+                x: -w * 0.6,
+                y,
+                offset: 0,
+                opacity: 0,
+            },
+            {
+                x: v.width * 0.18,
+                y: y - 5,
+                offset: 0.20,
+            },
+            {
+                x: v.width * 0.37,
+                y:
+                    y -
+                    h * 0.20,
+                offset: 0.38,
+                rotation: -9,
+            },
+            {
+                x: v.width * 0.52,
+                y:
+                    y -
+                    h * 0.35,
+                offset: 0.55,
+                rotation: -13,
+            },
+            {
+                x: v.width * 0.67,
+                y:
+                    y -
+                    h * 0.18,
+                offset: 0.71,
+                rotation: 9,
+            },
+            {
+                x: v.width * 0.84,
+                y,
+                offset: 0.87,
+            },
+            {
+                x:
+                    v.width +
+                    w * 0.3,
+                y,
+                offset: 1,
+                opacity: 0,
+            },
+        ];
+    }
+
+    ladybugChangeMind(
+        v,
+        w,
+        h,
+        y
+    ) {
+        return [
+            {
+                x: -w * 0.6,
+                y,
+                offset: 0,
+                opacity: 0,
+            },
+            {
+                x: v.width * 0.20,
+                y,
+                offset: 0.20,
+            },
+            {
+                x: v.width * 0.43,
+                y: y - 7,
+                offset: 0.42,
+            },
+            {
+                x: v.width * 0.34,
+                y: y + 2,
+                offset: 0.55,
+                rotation: 8,
+            },
+            {
+                x: v.width * 0.48,
+                y: y - 3,
+                offset: 0.68,
+            },
+            {
+                x: v.width * 0.78,
+                y,
+                offset: 0.86,
+            },
+            {
+                x:
+                    v.width +
+                    w * 0.3,
+                y,
+                offset: 1,
+                opacity: 0,
+            },
+        ];
+    }
+
+    /* --------------------------------------------------------
+     * WORM
+     * --------------------------------------------------------
+     *
+     * Worm:
+     *
+     * normalWiggle  55%
+     * peek          25%
+     * deepDip       12%
+     * suspicious     8%
+     */
+
+    animateWorm(img) {
+        const v =
+            this.viewport();
+
+        const rect =
+            img.getBoundingClientRect();
+
+        const w =
+            rect.width || 130;
+
+        const h =
+            rect.height || 110;
+
+        const direction =
+            this.chance(0.5)
+                ? 1
+                : -1;
+
+        const archetype =
+            this.weightedChoice([
+                [
+                    "normalWiggle",
+                    55,
+                ],
+                [
+                    "peek",
+                    25,
+                ],
+                [
+                    "deepDip",
+                    12,
+                ],
+                [
+                    "suspicious",
+                    8,
+                ],
+            ]);
+
+        /*
+         * Lift the worm higher so its face is less often cut off.
+         * It should still feel like it lives along the bottom edge.
+         */
+        const baseY =
+            v.height -
+            h *
+                this.random(
+                    0.58,
+                    0.72
+                );
+
+        let points;
+
+        switch (archetype) {
+            case "peek":
+                points =
+                    this.wormPeek(
+                        v,
+                        w,
+                        h,
+                        baseY
+                    );
+                break;
+
+            case "deepDip":
+                points =
+                    this.wormDeepDip(
+                        v,
+                        w,
+                        h,
+                        baseY
+                    );
+                break;
+
+            case "suspicious":
+                points =
+                    this.wormSuspicious(
+                        v,
+                        w,
+                        h,
+                        baseY
+                    );
+                break;
+
+            default:
+                points =
+                    this.wormNormal(
+                        v,
+                        w,
+                        h,
+                        baseY
+                    );
+        }
+
+        if (
+            direction === -1
+        ) {
+            for (
+                const p
+                of points
+            ) {
+                p.x =
+                    v.width -
+                    p.x -
+                    w *
+                        0.05;
+            }
+        }
+
+        const frames =
+            points.map(
+                (p, index) => ({
+                    offset:
+                        p.offset,
+
+                    transform:
+                        `translate3d(${p.x}px, ${p.y}px, 0) ` +
+                        `rotate(${p.rotation ?? (index % 2 ? 7 : -7)}deg) ` +
+                        `scaleX(${p.scaleX ?? (index % 2 ? 0.94 : 1.06)}) ` +
+                        `scaleY(${p.scaleY ?? 1})`,
+
+                    opacity:
+                        p.opacity ??
+                        1,
+                })
+            );
+
+        const animation =
+            img.animate(
+                frames,
+                {
+                    /*
+                     * Worm is our slowest visitor.
+                     * The longer duration makes the wiggles and pauses
+                     * read as crawling rather than sliding.
+                     */
+                    duration:
+                        this.random(
+                            16000,
+                            23000
+                        ),
+
+                    easing:
+                        "ease-in-out",
+
+                    fill:
+                        "forwards",
+                }
+            );
+
+        console.log(
+            "BMO worm path:",
+            archetype
+        );
+
+        this.finishAfter(
+            img,
+            animation
+        );
+    }
+
+    wormNormal(
+        v,
+        w,
+        h,
+        y
+    ) {
+        /*
+         * Worm movement is a sequence of tiny stretches and compressions
+         * rather than a single smooth slide.
+         *
+         * The route wanders vertically while remaining predominantly
+         * along BMO's lower edge.
+         */
+
+        const points = [];
+
+        const count =
+            this.randomInt(
+                13,
+                17
+            );
+
+        let currentY = y;
+
+        for (
+            let i = 0;
+            i < count;
+            i++
+        ) {
+            const t =
+                i /
+                (count - 1);
+
+            let x =
+                -w * 0.65 +
+                (
+                    v.width +
+                    w
+                ) *
+                    t;
+
+            /*
+             * A worm doesn't maintain constant forward velocity.
+             * Sometimes it compresses and gains almost no ground.
+             */
+            if (
+                i > 1 &&
+                i < count - 2
+            ) {
+                if (
+                    this.chance(
+                        0.22
+                    )
+                ) {
+                    x -=
+                        this.random(
+                            8,
+                            28
+                        );
+                }
+            }
+
+            /*
+             * Normal sinusoidal crawling plus imperfect little changes
+             * in terrain.
+             */
+            currentY +=
+                Math.sin(
+                    t *
+                    Math.PI *
+                    this.random(
+                        5.5,
+                        8
+                    )
+                ) *
+                    h *
+                    0.025;
+
+            currentY +=
+                this.random(
+                    -8,
+                    8
+                );
+
+            /*
+             * Occasional small upward exploration.
+             */
+            if (
+                i > 1 &&
+                i < count - 2 &&
+                this.chance(0.15)
+            ) {
+                currentY -=
+                    h *
+                    this.random(
+                        0.08,
+                        0.17
+                    );
+            }
+
+            currentY =
+                this.clamp(
+                    currentY,
+                    y - h * 0.28,
+                    y + h * 0.10
+                );
+
+            const compressed =
+                i % 2 === 0;
+
+            points.push({
+                x,
+                y: currentY,
+                offset: t,
+
+                rotation:
+                    this.random(
+                        -8,
+                        8
+                    ),
+
+                scaleX:
+                    compressed
+                        ? this.random(
+                            1.05,
+                            1.11
+                        )
+                        : this.random(
+                            0.90,
+                            0.97
+                        ),
+
+                scaleY:
+                    compressed
+                        ? this.random(
+                            0.94,
+                            0.99
+                        )
+                        : this.random(
+                            1.02,
+                            1.07
+                        ),
+
+                opacity:
+                    i === 0 ||
+                    i === count - 1
+                        ? 0
+                        : 1,
+            });
+        }
+
+        return points;
+    }
+
+    wormPeek(
+        v,
+        w,
+        h,
+        y
+    ) {
+        /*
+         * The peek route now crawls toward the peek rather than simply
+         * sliding there, investigates for a moment, and then wiggles
+         * away again.
+         */
+
+        const peekX =
+            v.width *
+            this.random(
+                0.38,
+                0.62
+            );
+
+        const peekY =
+            y -
+            h *
+            this.random(
+                0.28,
+                0.42
+            );
+
+        return [
+            {
+                x:
+                    -w *
+                    0.65,
+                y:
+                    y +
+                    h *
+                    0.04,
+                offset: 0,
+                opacity: 0,
+                scaleX: 1.08,
+                scaleY: 0.96,
+            },
+
+            {
+                x:
+                    v.width *
+                    0.10,
+                y:
+                    y -
+                    h *
+                    0.02,
+                offset: 0.10,
+                rotation: -5,
+                scaleX: 0.93,
+                scaleY: 1.04,
+            },
+
+            {
+                x:
+                    v.width *
+                    0.18,
+                y:
+                    y +
+                    h *
+                    0.03,
+                offset: 0.18,
+                rotation: 6,
+                scaleX: 1.08,
+                scaleY: 0.95,
+            },
+
+            {
+                x:
+                    v.width *
+                    0.28,
+                y:
+                    y -
+                    h *
+                    0.08,
+                offset: 0.27,
+                rotation: -7,
+                scaleX: 0.92,
+                scaleY: 1.05,
+            },
+
+            {
+                x:
+                    peekX -
+                    v.width *
+                    0.07,
+                y:
+                    peekY +
+                    h *
+                    0.10,
+                offset: 0.36,
+                rotation: 6,
+                scaleX: 1.07,
+                scaleY: 0.96,
+            },
+
+            {
+                x:
+                    peekX,
+                y:
+                    peekY,
+                offset: 0.44,
+                rotation: -2,
+                scaleX: 0.94,
+                scaleY: 1.07,
+            },
+
+            /*
+             * Little suspicious peek / pause.
+             */
+            {
+                x:
+                    peekX +
+                    2,
+                y:
+                    peekY -
+                    3,
+                offset: 0.53,
+                rotation: 3,
+                scaleX: 0.98,
+                scaleY: 1.08,
+            },
+
+            {
+                x:
+                    peekX -
+                    2,
+                y:
+                    peekY +
+                    1,
+                offset: 0.61,
+                rotation: -4,
+                scaleX: 1.02,
+                scaleY: 1.04,
+            },
+
+            {
+                x:
+                    peekX +
+                    v.width *
+                    0.10,
+                y:
+                    y -
+                    h *
+                    0.14,
+                offset: 0.69,
+                rotation: 7,
+                scaleX: 0.92,
+                scaleY: 1.06,
+            },
+
+            {
+                x:
+                    v.width *
+                    0.72,
+                y:
+                    y +
+                    h *
+                    0.02,
+                offset: 0.80,
+                rotation: -6,
+                scaleX: 1.08,
+                scaleY: 0.95,
+            },
+
+            {
+                x:
+                    v.width *
+                    0.86,
+                y:
+                    y -
+                    h *
+                    0.05,
+                offset: 0.90,
+                rotation: 5,
+                scaleX: 0.93,
+                scaleY: 1.05,
+            },
+
+            {
+                x:
+                    v.width +
+                    w *
+                    0.30,
+                y:
+                    y +
+                    h *
+                    0.03,
+                offset: 1,
+                opacity: 0,
+                scaleX: 1.06,
+                scaleY: 0.97,
+            },
+        ];
+    }
+
+    wormDeepDip(
+        v,
+        w,
+        h,
+        y
+    ) {
+        return [
+            {
+                x: -w * 0.65,
+                y,
+                offset: 0,
+                opacity: 0,
+            },
+            {
+                x: v.width * 0.20,
+                y:
+                    y -
+                    h * 0.05,
+                offset: 0.22,
+            },
+            {
+                x: v.width * 0.40,
+                y:
+                    y +
+                    h * 0.12,
+                offset: 0.42,
+            },
+            {
+                x: v.width * 0.55,
+                y:
+                    y +
+                    h * 0.16,
+                offset: 0.57,
+            },
+            {
+                x: v.width * 0.72,
+                y:
+                    y -
+                    h * 0.08,
+                offset: 0.77,
+            },
+            {
+                x:
+                    v.width +
+                    w * 0.30,
+                y,
+                offset: 1,
+                opacity: 0,
+            },
+        ];
+    }
+
+    wormSuspicious(
+        v,
+        w,
+        h,
+        y
+    ) {
+        const stopX =
+            v.width *
+            this.random(
+                0.38,
+                0.62
+            );
+
+        return [
+            {
+                x: -w * 0.65,
+                y,
+                offset: 0,
+                opacity: 0,
+            },
+            {
+                x: v.width * 0.18,
+                y,
+                offset: 0.18,
+            },
+            {
+                x: stopX,
+                y:
+                    y -
+                    h * 0.18,
+                offset: 0.40,
+            },
+
+            {
+                x: stopX + 3,
+                y:
+                    y -
+                    h * 0.20,
+                offset: 0.55,
+                rotation: -4,
+            },
+
+            {
+                x: stopX - 2,
+                y:
+                    y -
+                    h * 0.19,
+                offset: 0.65,
+                rotation: 5,
+            },
+
+            {
+                x: v.width * 0.78,
+                y,
+                offset: 0.86,
+            },
+
+            {
+                x:
+                    v.width +
+                    w * 0.30,
+                y,
+                offset: 1,
+                opacity: 0,
+            },
+        ];
+    }
+
+    finishAfter(
+        img,
+        animation
+    ) {
+        const cleanup =
+            () => {
+                this.active.delete(
+                    img
+                );
+
+                img?.remove();
+            };
+
+        animation.onfinish =
+            cleanup;
+
+        animation.oncancel =
+            cleanup;
+    }
+
+    clear() {
+        for (
+            const img
+            of Array.from(
+                this.active
+            )
+        ) {
+            try {
+                for (
+                    const animation
+                    of img.getAnimations()
+                ) {
+                    animation.cancel();
+                }
+            } catch (_) {
+                img.remove();
+            }
+
+            this.active.delete(
+                img
+            );
+        }
+
+        if (this.layer) {
+            this.layer.innerHTML =
+                "";
+        }
+    }
+}
+
+const bmoCritters =
+    new BMOCritterOverlay();
+
+window.bmoCritters =
+    bmoCritters;
+
+window.showBMOCritter =
+    function(type) {
+        return bmoCritters.spawn(
+            type
+        );
+    };
+
+window.clearBMOCritters =
+    function() {
+        bmoCritters.clear();
+    };
+
+/*
+ * Compatibility:
+ *
+ * Old callers can still request "bee", "ladybug" or "worm"
+ * through setFaceState(), but they become overlays instead.
+ */
+const bmoOriginalSetFaceState =
+    setFaceState;
+
+setFaceState =
+    function(
+        state,
+        ...args
+    ) {
+        const normalized =
+            String(
+                state || ""
+            ).toLowerCase();
+
+        if (
+            normalized ===
+                "bee" ||
+            normalized ===
+                "ladybug" ||
+            normalized ===
+                "worm"
+        ) {
+            bmoCritters.spawn(
+                normalized
+            );
+
+            console.log(
+                "BMO critter overlay:",
+                normalized
+            );
+
+            return;
+        }
+
+        return bmoOriginalSetFaceState(
+            state,
+            ...args
+        );
+    };
+
+function installBMOCritterDebugButton() {
+    const faceButtons =
+        document.getElementById(
+            "bmo-debug-face-buttons"
+        );
+
+    if (!faceButtons) {
+        return false;
+    }
+
+    if (
+        document.getElementById(
+            "bmo-debug-clear-critters"
+        )
+    ) {
+        return true;
+    }
+
+    const button =
+        document.createElement(
+            "button"
+        );
+
+    button.id =
+        "bmo-debug-clear-critters";
+
+    button.type =
+        "button";
+
+    button.textContent =
+        "Clear critters";
+
+    button.addEventListener(
+        "click",
+        (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+
+            bmoCritters.clear();
+        }
+    );
+
+    faceButtons.appendChild(
+        button
+    );
+
+    return true;
+}
+
+if (
+    !installBMOCritterDebugButton()
+) {
+    const observer =
+        new MutationObserver(
+            () => {
+                if (
+                    installBMOCritterDebugButton()
+                ) {
+                    observer.disconnect();
+                }
+            }
+        );
+
+    observer.observe(
+        document.body,
+        {
+            childList: true,
+            subtree: true,
+        }
+    );
+
+    setTimeout(
+        () =>
+            observer.disconnect(),
+        15000
+    );
+}
+
+console.log(
+    "BMO structured-random critter system ready"
+);
+
+/* === END BMO CRITTER OVERLAY SYSTEM === */
