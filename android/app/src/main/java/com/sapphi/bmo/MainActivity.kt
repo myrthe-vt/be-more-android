@@ -792,11 +792,8 @@ class MainActivity : AppCompatActivity() {
                             bmoPageReady &&
                             !isRecording
                         ) {
-                            mainHandler.postDelayed(
-                                {
-                                    startWakeWordSystem()
-                                },
-                                3000
+                            rearmWakeWord(
+                                3000L
                             )
                         }
                     }
@@ -1071,6 +1068,11 @@ class MainActivity : AppCompatActivity() {
         if (
             wakeWordTriggered
         ) {
+            Log.i(
+                WAKE_LOG,
+                "Wake detection ignored because previous wake is still active"
+            )
+
             return
         }
 
@@ -1150,13 +1152,7 @@ class MainActivity : AppCompatActivity() {
                     "Automatic command recording failed to start"
                 )
 
-                wakeWordTriggered =
-                    false
-
-                mainHandler.postDelayed(
-                    {
-                        startWakeWordSystem()
-                    },
+                rearmWakeWord(
                     1000L
                 )
 
@@ -1179,6 +1175,51 @@ class MainActivity : AppCompatActivity() {
                 WAKE_COMMAND_RECORD_MS
             )
         }
+    }
+
+
+    private fun rearmWakeWord(
+        delayMs: Long = 1000L
+    ) {
+        /*
+         * One single place owns the transition back to passive
+         * wake-word listening after command capture, errors, or
+         * no-speech results.
+         *
+         * Resetting wakeWordTriggered here is critical. Without it,
+         * a second detection can be ignored until the Activity is
+         * recreated.
+         */
+        wakeWordTriggered =
+            false
+
+        Log.i(
+            WAKE_LOG,
+            "Scheduling wake-word rearm in ${delayMs}ms"
+        )
+
+        mainHandler.postDelayed(
+            {
+                if (
+                    bmoPageReady &&
+                    !isRecording
+                ) {
+                    Log.i(
+                        WAKE_LOG,
+                        "Rearming wake word listener"
+                    )
+
+                    startWakeWordSystem()
+
+                } else {
+                    Log.i(
+                        WAKE_LOG,
+                        "Wake rearm skipped: pageReady=$bmoPageReady isRecording=$isRecording"
+                    )
+                }
+            },
+            delayMs
+        )
     }
 
 
@@ -1363,11 +1404,8 @@ class MainActivity : AppCompatActivity() {
                 "Microphone failed to start"
             )
 
-            mainHandler.postDelayed(
-                {
-                    startWakeWordSystem()
-                },
-                1000
+            rearmWakeWord(
+                1000L
             )
         }
     }
@@ -1401,11 +1439,8 @@ class MainActivity : AppCompatActivity() {
                 "Recording was too short"
             )
 
-            mainHandler.postDelayed(
-                {
-                    startWakeWordSystem()
-                },
-                1000
+            rearmWakeWord(
+                1000L
             )
 
             return
@@ -1425,11 +1460,8 @@ class MainActivity : AppCompatActivity() {
                 "No microphone audio was recorded"
             )
 
-            mainHandler.postDelayed(
-                {
-                    startWakeWordSystem()
-                },
-                1000
+            rearmWakeWord(
+                1000L
             )
 
             return
@@ -1491,11 +1523,8 @@ class MainActivity : AppCompatActivity() {
                     runOnUiThread {
                         notifyJavascriptNoSpeech()
 
-                        mainHandler.postDelayed(
-                            {
-                                startWakeWordSystem()
-                            },
-                            1000
+                        rearmWakeWord(
+                            1000L
                         )
                     }
 
@@ -1505,6 +1534,15 @@ class MainActivity : AppCompatActivity() {
                 runOnUiThread {
                     notifyJavascriptTranscript(
                         transcript
+                    )
+
+                    /*
+                     * Successful transcription used to be the one path
+                     * that did not explicitly rearm passive wake listening.
+                     * Re-arm here after handing the transcript to face.js.
+                     */
+                    rearmWakeWord(
+                        1500L
                     )
                 }
 
@@ -1520,11 +1558,8 @@ class MainActivity : AppCompatActivity() {
                         "Transcription failed"
                     )
 
-                    mainHandler.postDelayed(
-                        {
-                            startWakeWordSystem()
-                        },
-                        2000
+                    rearmWakeWord(
+                        2000L
                     )
                 }
             }
@@ -1822,11 +1857,8 @@ class MainActivity : AppCompatActivity() {
                 granted &&
                 !isRecording
             ) {
-                mainHandler.postDelayed(
-                    {
-                        startWakeWordSystem()
-                    },
-                    1000
+                rearmWakeWord(
+                    1000L
                 )
             }
         }
@@ -1881,11 +1913,8 @@ class MainActivity : AppCompatActivity() {
             bmoPageReady &&
             !isRecording
         ) {
-            mainHandler.postDelayed(
-                {
-                    startWakeWordSystem()
-                },
-                1000
+            rearmWakeWord(
+                1000L
             )
         }
     }
