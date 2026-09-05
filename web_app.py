@@ -15,17 +15,218 @@ import subprocess
 import datetime
 import threading
 import queue
+import re
 
 # Import our new unified core modules
 from core.llm import Brain, strip_prompt_leakage, extract_json_object, sanitize_messages
 from core.tts import play_audio_on_hardware, generate_audio_file, add_pronunciation, load_pronunciations, clean_text_for_speech
 from core.stt import transcribe_audio
-from core.config import LLM_URL, WAKE_WORD_MODEL, WAKE_WORD_THRESHOLD
+from core.config import LLM_URL, FAST_LLM_MODEL, WAKE_WORD_MODEL, WAKE_WORD_THRESHOLD
 from core.timers import parse_timer_request, describe_duration
+from core.search import search_web
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Android BMO persistent conversation memory
+# ---------------------------------------------------------------------------
+# Keep this separate from the legacy desktop agent's memory.json. Android BMO
+# owns this file and persists a small rolling conversation window across
+# WebView/app/backend restarts.
+ANDROID_MEMORY_FILE = "memory_android.json"
+ANDROID_MEMORY_MAX_MESSAGES = 20
+_android_memory_lock = threading.Lock()
+
+_MEMORY_RESET_PHRASES = {
+    "forget everything",
+    "forget our conversation",
+    "reset memory",
+    "clear memory",
+    "clear your memory",
+    "wipe memory",
+    "wipe your memory",
+}
+
+
+def _normalize_memory(history):
+    """Keep only safe role/content chat messages and cap the rolling window."""
+    cleaned = []
+
+    for item in history or []:
+        if not isinstance(item, dict):
+            continue
+
+        role = item.get("role")
+        content = item.get("content")
+
+        if role not in {"user", "assistant"}:
+            continue
+
+        if not isinstance(content, str):
+            continue
+
+        content = content.strip()
+
+        if not content:
+            continue
+
+        cleaned.append(
+            {
+                "role": role,
+                "content": content,
+            }
+        )
+
+    return cleaned[-ANDROID_MEMORY_MAX_MESSAGES:]
+
+
+def load_android_memory():
+    with _android_memory_lock:
+        if not os.path.exists(
+            ANDROID_MEMORY_FILE
+        ):
+            return []
+
+        try:
+            with open(
+                ANDROID_MEMORY_FILE,
+                "r",
+                encoding="utf-8",
+            ) as handle:
+                data = json.load(
+                    handle
+                )
+
+            return _normalize_memory(
+                data
+            )
+
+        except Exception:
+            logger.exception(
+                "Could not load Android BMO memory"
+            )
+
+            return []
+
+
+def save_android_memory(history):
+    cleaned = _normalize_memory(
+        history
+    )
+
+    temporary_file = (
+        ANDROID_MEMORY_FILE +
+        ".tmp"
+    )
+
+    with _android_memory_lock:
+        try:
+            with open(
+                temporary_file,
+                "w",
+                encoding="utf-8",
+            ) as handle:
+                json.dump(
+                    cleaned,
+                    handle,
+                    ensure_ascii=False,
+                    indent=2,
+                )
+
+            os.replace(
+                temporary_file,
+                ANDROID_MEMORY_FILE,
+            )
+
+        except Exception:
+            logger.exception(
+                "Could not save Android BMO memory"
+            )
+
+            try:
+                if os.path.exists(
+                    temporary_file
+                ):
+                    os.remove(
+                        temporary_file
+                    )
+            except Exception:
+                pass
+
+    return cleaned
+
+
+def clear_android_memory():
+    return save_android_memory(
+        []
+    )
+
+
+def get_android_memory_for_request(client_history=None):
+    """
+    Disk is the source of truth after persistence begins.
+
+    If no memory file exists yet, seed it once from the WebView's current
+    conversation history so enabling this feature does not erase the user's
+    already-active conversation.
+    """
+    if os.path.exists(
+        ANDROID_MEMORY_FILE
+    ):
+        return load_android_memory()
+
+    seeded = _normalize_memory(
+        client_history or []
+    )
+
+    if seeded:
+        save_android_memory(
+            seeded
+        )
+
+    return seeded
+
+
+def is_memory_reset_request(text):
+    normalized = (
+        str(text or "")
+        .strip()
+        .lower()
+        .rstrip(".!?")
+    )
+
+    return normalized in _MEMORY_RESET_PHRASES
+
+
+def append_memory_turn(history, user_text, assistant_text):
+    updated = list(
+        history or []
+    )
+
+    updated.append(
+        {
+            "role": "user",
+            "content": str(
+                user_text
+            ).strip(),
+        }
+    )
+
+    updated.append(
+        {
+            "role": "assistant",
+            "content": str(
+                assistant_text
+            ).strip(),
+        }
+    )
+
+    return save_android_memory(
+        updated
+    )
+
 
 # ---------------------------------------------------------------------------
 # Server-side timers
@@ -171,21 +372,237 @@ class PronunciationRequest(BaseModel):
     phonetic: str
 
 
-def execute_server_action(action_data):
+# ---------------------------------------------------------------------------
+# Deterministic web-search routing
+# ---------------------------------------------------------------------------
+# Current/fresh information should not depend on Qwen deciding to call a tool.
+# These patterns intentionally cover explicit search requests and obviously
+# time-sensitive questions. Ordinary evergreen questions still go to Qwen.
+_EXPLICIT_SEARCH_RE = re.compile(
+    r"^\s*(?:"
+    r"search(?:\s+(?:the\s+)?web)?(?:\s+for)?|"
+    r"google|"
+    r"look\s+up|"
+    r"find\s+(?:online|on\s+the\s+web)"
+    r")\s+(?P<query>.+?)\s*$",
+    re.IGNORECASE,
+)
+
+_FRESH_INFO_RE = re.compile(
+    r"\b(?:"
+    r"latest|"
+    r"current|"
+    r"currently|"
+    r"today(?:'s)?|"
+    r"right\s+now|"
+    r"recent|"
+    r"newest|"
+    r"breaking|"
+    r"news|"
+    r"this\s+week|"
+    r"this\s+month"
+    r")\b",
+    re.IGNORECASE,
+)
+
+_FRESH_QUESTION_RE = re.compile(
+    r"^\s*(?:"
+    r"what(?:'s|\s+is)|"
+    r"what\s+happened|"
+    r"tell\s+me|"
+    r"give\s+me|"
+    r"do\s+you\s+know"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def get_pre_llm_search_query(text: str):
+    """
+    Return a search query when the utterance clearly asks for web/current info.
+
+    Explicit search commands always route to search. Freshness words route only
+    when the utterance looks like an information request, which reduces false
+    positives such as "my newest project is working".
+    """
+    if not text:
+        return None
+
+    stripped = text.strip()
+
+    explicit = _EXPLICIT_SEARCH_RE.match(
+        stripped
+    )
+
+    if explicit:
+        query = (
+            explicit.group("query")
+            or ""
+        ).strip()
+
+        return query or None
+
+    if (
+        _FRESH_INFO_RE.search(stripped)
+        and _FRESH_QUESTION_RE.search(stripped)
+    ):
+        return stripped
+
+    return None
+
+
+def perform_web_search_answer(query: str, user_text: str) -> str:
+    """
+    Search using core.search and turn the result into a concise spoken answer.
+    """
+    logger.info(
+        "Searching web for: %r",
+        query,
+    )
+
+    try:
+        search_result = search_web(
+            query
+        )
+
+        if (
+            not search_result
+            or search_result == "SEARCH_EMPTY"
+        ):
+            return (
+                "I searched, but I couldn't find anything useful about that."
+            )
+
+        if search_result == "SEARCH_ERROR":
+            return (
+                "I can't reach the internet right now."
+            )
+
+        logger.info(
+            "Web search succeeded for %r",
+            query,
+        )
+
+        try:
+            summary = _summarize_search_result(
+                search_result,
+                user_text or query,
+            )
+
+            if summary:
+                return summary
+
+        except Exception:
+            logger.exception(
+                "Search result summarization failed"
+            )
+
+        return (
+            "I found something, but I had trouble summarizing it."
+        )
+
+    except Exception:
+        logger.exception(
+            "Web search failed for %r",
+            query,
+        )
+
+        return (
+            "I can't reach the internet right now."
+        )
+
+
+def _summarize_search_result(search_result: str, user_text: str) -> str:
+    """
+    Turn raw search output into a short spoken BMO answer.
+
+    The original desktop agent searches first, then asks the LLM to summarize
+    the real-world result. Keep the same pattern here so Android never has to
+    understand raw search payloads.
+    """
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are BMO, a cute helpful robot assistant. "
+                "Answer the user's question using ONLY the supplied web search "
+                "result. Be concise and natural, usually two to four short "
+                "sentences. Always finish your final sentence. If the result "
+                "does not contain enough information, say that instead of "
+                "inventing facts."
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"USER QUESTION:\n{user_text}\n\n"
+                f"WEB SEARCH RESULT:\n{search_result}"
+            ),
+        },
+    ]
+
+    payload = {
+        "model": FAST_LLM_MODEL,
+        "messages": sanitize_messages(messages),
+        "stream": False,
+        "options": {
+            "temperature": 0.3,
+            "num_predict": 300,
+        },
+    }
+
+    response = requests.post(
+        LLM_URL,
+        json=payload,
+        timeout=60,
+    )
+
+    response.raise_for_status()
+
+    content = (
+        response.json()
+        .get("message", {})
+        .get("content", "")
+        .strip()
+    )
+
+    return strip_prompt_leakage(content).strip()
+
+
+def execute_server_action(action_data, user_text=""):
     """
     Execute actions that belong on BMO's Mac brain.
 
-    Start deliberately small. Once this route is proven end-to-end,
-    new tools such as timers and homelab status can be added here.
+    Android remains a thin body. Tools that need the Mac, internet, local
+    services, or future homelab access should execute here.
     """
-    raw_action = str(action_data.get("action", "")).lower().strip()
+    raw_action = str(
+        action_data.get(
+            "action",
+            "",
+        )
+    ).lower().strip()
+
+    value = (
+        action_data.get("value")
+        or action_data.get("query")
+        or ""
+    )
 
     aliases = {
         "check_time": "get_time",
         "time": "get_time",
+        "google": "search_web",
+        "browser": "search_web",
+        "news": "search_web",
+        "search_news": "search_web",
+        "web_search": "search_web",
     }
 
-    action = aliases.get(raw_action, raw_action)
+    action = aliases.get(
+        raw_action,
+        raw_action,
+    )
 
     logger.info(
         "Server action requested: %s -> %s",
@@ -194,16 +611,44 @@ def execute_server_action(action_data):
     )
 
     if action == "get_time":
-        now = datetime.datetime.now().strftime("%I:%M %p")
+        now = datetime.datetime.now().strftime(
+            "%I:%M %p"
+        )
+
         return {
             "handled": True,
             "action": action,
-            "response": f"The current time is {now}.",
+            "response": (
+                f"The current time is {now}."
+            ),
         }
 
-    # Do not silently swallow tools we have not migrated from the
-    # desktop agent yet. Returning handled=False preserves the old
-    # client-dispatch behaviour for those actions.
+    if action == "search_web":
+        query = str(value).strip()
+
+        if not query:
+            logger.warning(
+                "search_web requested without a query"
+            )
+
+            return {
+                "handled": True,
+                "action": action,
+                "response": (
+                    "What would you like me to search for?"
+                ),
+            }
+
+        return {
+            "handled": True,
+            "action": action,
+            "response": perform_web_search_answer(
+                query,
+                user_text or query,
+            ),
+        }
+
+    # Do not silently swallow tools we have not migrated yet.
     return {
         "handled": False,
         "action": action,
@@ -310,6 +755,60 @@ def chat(request: ChatRequest, background_tasks: BackgroundTasks):
     user_text = request.message
     play_on_hardware = request.play_on_hardware
 
+    persistent_history = get_android_memory_for_request(
+        request.history
+    )
+
+    # Memory reset is deterministic and scoped only to Android BMO.
+    if is_memory_reset_request(
+        user_text
+    ):
+        clear_android_memory()
+
+        response_text = (
+            "Okay. I forgot our conversation history."
+        )
+
+        logger.info(
+            "Android BMO memory cleared by voice request"
+        )
+
+        audio_url = None
+        tts_content = (
+            clean_text_for_speech(
+                response_text
+            )
+            or response_text
+        )
+
+        background_tasks.add_task(
+            _cleanup_old_audio
+        )
+
+        if play_on_hardware:
+            background_tasks.add_task(
+                play_audio_on_hardware,
+                tts_content,
+            )
+        else:
+            filename = (
+                f"response_{uuid.uuid4().hex[:8]}.wav"
+            )
+
+            audio_url = generate_audio_file(
+                tts_content,
+                filename,
+            )
+
+        return {
+            "response": response_text,
+            "history": [],
+            "audio_url": audio_url,
+            "action": {
+                "type": "memory_cleared",
+            },
+        }
+
     # ------------------------------------------------------------------
     # Deterministic timer/reminder routing
     # ------------------------------------------------------------------
@@ -345,22 +844,10 @@ def chat(request: ChatRequest, background_tasks: BackgroundTasks):
 
         # Keep browser/Android conversation history coherent even though the
         # LLM was intentionally skipped for this turn.
-        response_history = list(
-            request.history or []
-        )
-
-        response_history.append(
-            {
-                "role": "user",
-                "content": user_text,
-            }
-        )
-
-        response_history.append(
-            {
-                "role": "assistant",
-                "content": response_text,
-            }
+        response_history = append_memory_turn(
+            persistent_history,
+            user_text,
+            response_text,
         )
 
         audio_url = None
@@ -402,11 +889,78 @@ def chat(request: ChatRequest, background_tasks: BackgroundTasks):
             },
         }
 
-    # Initialize brain and load history
-    # persist=False: the browser owns this conversation's history; writing it to
-    # memory.json would clobber the desktop agent's separate memory.
+    # ------------------------------------------------------------------
+    # Deterministic current-info / explicit web-search routing
+    # ------------------------------------------------------------------
+    # Do this before Qwen so fresh-information requests cannot be answered
+    # from stale model knowledge merely because the model chose a different
+    # action such as set_expression.
+    search_query = get_pre_llm_search_query(
+        user_text
+    )
+
+    if search_query:
+        logger.info(
+            "Pre-LLM web search matched: %r -> %r",
+            user_text,
+            search_query,
+        )
+
+        response_text = perform_web_search_answer(
+            search_query,
+            user_text,
+        )
+
+        response_history = append_memory_turn(
+            persistent_history,
+            user_text,
+            response_text,
+        )
+
+        audio_url = None
+        tts_content = (
+            clean_text_for_speech(
+                response_text
+            )
+            or response_text
+        )
+
+        background_tasks.add_task(
+            _cleanup_old_audio
+        )
+
+        if play_on_hardware:
+            background_tasks.add_task(
+                play_audio_on_hardware,
+                tts_content,
+            )
+        else:
+            filename = (
+                f"response_{uuid.uuid4().hex[:8]}.wav"
+            )
+
+            audio_url = generate_audio_file(
+                tts_content,
+                filename,
+            )
+
+        return {
+            "response": response_text,
+            "history": response_history,
+            "audio_url": audio_url,
+            "action": {
+                "type": "web_search",
+                "query": search_query,
+            },
+        }
+
+    # Initialize a non-persistent Brain because Android BMO now owns its own
+    # persistence layer in memory_android.json. This avoids touching the legacy
+    # desktop agent's memory.json while still preserving context across restarts.
     brain = Brain(persist=False)
-    brain.set_history(request.history)
+    brain.set_history(
+        persistent_history
+    )
 
     # If an image is provided, use the vision model
     if request.image:
@@ -418,7 +972,10 @@ def chat(request: ChatRequest, background_tasks: BackgroundTasks):
 
     # Check if there was an error
     if content.startswith("Error:") or content.startswith("Could not connect") or content.startswith("I'm having trouble"):
-        return {"error": content, "history": brain.get_history()}
+        return {
+            "error": content,
+            "history": persistent_history,
+        }
 
     # Action detection.
     #
@@ -439,7 +996,8 @@ def chat(request: ChatRequest, background_tasks: BackgroundTasks):
         ).strip()
 
         action_result = execute_server_action(
-            action_data
+            action_data,
+            user_text=user_text,
         )
 
         if action_result["handled"]:
@@ -512,10 +1070,36 @@ def chat(request: ChatRequest, background_tasks: BackgroundTasks):
             filename = f"response_{uuid.uuid4().hex[:8]}.wav"
             audio_url = generate_audio_file(tts_content, filename)
 
+    response_history = save_android_memory(
+        response_history
+    )
+
     return {
         "response": content,
         "history": response_history,
         "audio_url": audio_url
+    }
+
+
+@app.get("/api/memory")
+def get_android_memory_status():
+    """Small diagnostics endpoint for Android BMO's rolling memory."""
+    history = load_android_memory()
+
+    return {
+        "messages": len(history),
+        "max_messages": ANDROID_MEMORY_MAX_MESSAGES,
+        "file": ANDROID_MEMORY_FILE,
+    }
+
+
+@app.post("/api/memory/clear")
+def clear_android_memory_endpoint():
+    """Explicit API reset for diagnostics / future settings UI."""
+    clear_android_memory()
+
+    return {
+        "status": "cleared",
     }
 
 
