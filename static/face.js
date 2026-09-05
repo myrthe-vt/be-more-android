@@ -333,9 +333,6 @@ class BMOFaceRenderer {
         let currentWidth =
             this.mouthW;
 
-        /*
-         * Blinking
-         */
         if (
             ![
                 "sleepy",
@@ -364,9 +361,6 @@ class BMOFaceRenderer {
             this.blink = 1;
         }
 
-        /*
-         * Idle eye movement
-         */
         if (
             this.state === "idle"
         ) {
@@ -395,9 +389,6 @@ class BMOFaceRenderer {
             }
         }
 
-        /*
-         * Thinking
-         */
         if (
             this.state ===
             "thinking"
@@ -408,9 +399,6 @@ class BMOFaceRenderer {
                 ) * 15;
         }
 
-        /*
-         * Listening
-         */
         if (
             this.state ===
             "listening"
@@ -424,9 +412,6 @@ class BMOFaceRenderer {
                 "circle";
         }
 
-        /*
-         * Speaking
-         */
         if (
             this.state ===
             "speaking"
@@ -689,6 +674,9 @@ let dataArray = null;
 
 let wakeLock = null;
 
+let pendingExpression = null;
+let expressionTimer = null;
+
 
 /*
  * State helpers
@@ -708,6 +696,165 @@ function setFaceState(state) {
 
     bmoRenderer.eyeOffsetY =
         0;
+}
+
+
+const VALID_EXPRESSIONS =
+    new Set(
+        [
+            "idle",
+            "happy",
+            "sad",
+            "angry",
+            "surprised",
+            "sleepy",
+            "daydream",
+        ]
+    );
+
+
+function applyTemporaryExpression(
+    expression,
+    durationMs = 3000
+) {
+    if (
+        !VALID_EXPRESSIONS.has(
+            expression
+        )
+    ) {
+        console.warn(
+            "Ignoring unknown expression:",
+            expression
+        );
+
+        return;
+    }
+
+    clearTimeout(
+        expressionTimer
+    );
+
+    pendingExpression =
+        null;
+
+    setFaceState(
+        expression
+    );
+
+    expressionTimer =
+        setTimeout(
+            () => {
+                expressionTimer =
+                    null;
+
+                if (
+                    !isRecording &&
+                    !recordingStartPending &&
+                    !currentAudio &&
+                    bmoRenderer.state ===
+                        expression
+                ) {
+                    setFaceState(
+                        "idle"
+                    );
+                }
+            },
+            Math.max(
+                1000,
+                Math.min(
+                    6000,
+                    Number(
+                        durationMs
+                    ) || 3000
+                )
+            )
+        );
+}
+
+
+function handleServerAction(
+    action,
+    deferUntilAfterAudio = false
+) {
+    if (
+        !action ||
+        typeof action !==
+            "object"
+    ) {
+        return false;
+    }
+
+    if (
+        action.type ===
+            "set_expression"
+    ) {
+        const expression =
+            String(
+                action.expression ||
+                ""
+            ).toLowerCase();
+
+        const durationMs =
+            Number(
+                action.duration_ms ||
+                3000
+            );
+
+        if (
+            !VALID_EXPRESSIONS.has(
+                expression
+            )
+        ) {
+            return false;
+        }
+
+        if (
+            deferUntilAfterAudio ||
+            currentAudio ||
+            bmoRenderer.state ===
+                "speaking"
+        ) {
+            pendingExpression = {
+                expression:
+                    expression,
+
+                durationMs:
+                    durationMs,
+            };
+
+        } else {
+            applyTemporaryExpression(
+                expression,
+                durationMs
+            );
+        }
+
+        return true;
+    }
+
+    return false;
+}
+
+
+function applyPendingExpression() {
+    if (
+        !pendingExpression
+    ) {
+        return false;
+    }
+
+    const expression =
+        pendingExpression;
+
+    pendingExpression =
+        null;
+
+    applyTemporaryExpression(
+        expression.expression,
+        expression.durationMs
+    );
+
+    return true;
 }
 
 
@@ -768,10 +915,6 @@ function showTranscript(
         );
 }
 
-
-/*
- * Backend health / reconnect
- */
 
 function setBackendOnline(
     online
@@ -980,11 +1123,6 @@ async function processPendingTimerEvents() {
         return;
     }
 
-    /*
-     * Do not interrupt the user while they are actively talking.
-     * The event stays queued locally and will be played as soon as
-     * BMO is free.
-     */
     if (
         isRecording ||
         recordingStartPending
@@ -992,10 +1130,6 @@ async function processPendingTimerEvents() {
         return;
     }
 
-    /*
-     * If BMO is already speaking, wait for that response to finish.
-     * playBMOAudio() will call us again from its ended handler.
-     */
     if (
         currentAudio ||
         bmoRenderer.state ===
@@ -1121,10 +1255,6 @@ function scheduleTimerEventChecks() {
 }
 
 
-/*
- * Stop current BMO speech.
- */
-
 function stopCurrentAudio() {
     if (
         !currentAudio
@@ -1143,14 +1273,13 @@ function stopCurrentAudio() {
     currentAudio =
         null;
 
+    pendingExpression =
+        null;
+
     bmoRenderer.mouthOpen =
         0;
 }
 
-
-/*
- * Wake lock
- */
 
 async function requestWakeLock() {
     if (
@@ -1186,10 +1315,6 @@ async function requestWakeLock() {
 }
 
 
-/*
- * Browser recorder format
- */
-
 function getRecorderOptions() {
     const candidates = [
         "audio/webm;codecs=opus",
@@ -1217,10 +1342,6 @@ function getRecorderOptions() {
     return {};
 }
 
-
-/*
- * Recording
- */
 
 async function startRecording() {
     if (
@@ -1299,9 +1420,6 @@ async function startRecording() {
         }
     }
 
-    /*
-     * Native Android must use the native bridge.
-     */
     if (
         nativeShellRequested
     ) {
@@ -1332,9 +1450,6 @@ async function startRecording() {
         return;
     }
 
-    /*
-     * Browser fallback
-     */
     try {
         await requestWakeLock();
 
@@ -1562,10 +1677,6 @@ function stopRecording() {
 }
 
 
-/*
- * Hold interaction
- */
-
 function cancelPendingHold() {
     if (
         holdStartTimer
@@ -1591,10 +1702,6 @@ function beginHold(event) {
     activePointerId =
         event.pointerId;
 
-    /*
-     * Pressing while BMO is speaking silences him immediately.
-     * Holding past the threshold begins recording.
-     */
     if (
         bmoRenderer.state ===
             "speaking" ||
@@ -1684,10 +1791,6 @@ function endHold(
     }
 }
 
-
-/*
- * STT
- */
 
 async function sendAudioToBMO(
     blob
@@ -1786,10 +1889,6 @@ async function sendAudioToBMO(
 }
 
 
-/*
- * Chat
- */
-
 async function sendMessage(
     text
 ) {
@@ -1853,6 +1952,14 @@ async function sendMessage(
                 data.history;
         }
 
+        const handledServerAction =
+            handleServerAction(
+                data.action,
+                Boolean(
+                    data.audio_url
+                )
+            );
+
         if (
             data.audio_url
         ) {
@@ -1860,6 +1967,12 @@ async function sendMessage(
                 data.audio_url
             );
 
+            return;
+        }
+
+        if (
+            handledServerAction
+        ) {
             return;
         }
 
@@ -1893,10 +2006,6 @@ async function sendMessage(
     }
 }
 
-
-/*
- * Audio playback
- */
 
 async function playBMOAudio(
     audioUrl
@@ -1944,9 +2053,16 @@ async function playBMOAudio(
                     false;
             }
 
-            setFaceState(
-                "idle"
-            );
+            const expressionApplied =
+                applyPendingExpression();
+
+            if (
+                !expressionApplied
+            ) {
+                setFaceState(
+                    "idle"
+                );
+            }
 
             showStatus(
                 "Hold to talk",
@@ -2041,10 +2157,6 @@ async function playBMOAudio(
 }
 
 
-/*
- * Lip sync
- */
-
 function setupVisualizer(
     audioElement
 ) {
@@ -2132,10 +2244,6 @@ function setupVisualizer(
 }
 
 
-/*
- * Touch controls
- */
-
 screen.addEventListener(
     "pointerdown",
     (event) => {
@@ -2187,10 +2295,6 @@ window.addEventListener(
 );
 
 
-/*
- * Wake lock
- */
-
 document.addEventListener(
     "visibilitychange",
     async () => {
@@ -2217,10 +2321,6 @@ document.addEventListener(
     }
 );
 
-
-/*
- * Browser/PWA support
- */
 
 if (
     "serviceWorker" in navigator &&
@@ -2254,10 +2354,6 @@ if (
     );
 }
 
-
-/*
- * Native Android callbacks
- */
 
 window.onNativeRecordingStarted =
     function () {
@@ -2451,10 +2547,6 @@ window.onNativeMicError =
         );
     };
 
-
-/*
- * Initial state
- */
 
 setFaceState(
     "idle"
