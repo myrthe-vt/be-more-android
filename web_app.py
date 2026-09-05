@@ -569,6 +569,229 @@ def _summarize_search_result(search_result: str, user_text: str) -> str:
     return strip_prompt_leakage(content).strip()
 
 
+
+# ---------------------------------------------------------------------------
+# Facial expressions
+# ---------------------------------------------------------------------------
+VALID_EXPRESSIONS = {
+    "idle",
+    "happy",
+    "sad",
+    "angry",
+    "surprised",
+    "sleepy",
+    "daydream",
+}
+
+EXPRESSION_ALIASES = {
+    "neutral": "idle",
+    "normal": "idle",
+    "default": "idle",
+    "smile": "happy",
+    "smiling": "happy",
+    "excited": "happy",
+    "joy": "happy",
+    "joyful": "happy",
+    "concerned": "sad",
+    "worried": "sad",
+    "upset": "sad",
+    "mad": "angry",
+    "annoyed": "angry",
+    "shock": "surprised",
+    "shocked": "surprised",
+    "surprise": "surprised",
+    "tired": "sleepy",
+    "sleeping": "sleepy",
+    "dreamy": "daydream",
+    "pondering": "daydream",
+}
+
+
+def normalize_expression(value):
+    raw = str(value or "").lower().strip()
+
+    normalized = EXPRESSION_ALIASES.get(
+        raw,
+        raw,
+    )
+
+    if normalized in VALID_EXPRESSIONS:
+        return normalized
+
+    return None
+
+
+def normalize_expression_duration(action_data):
+    raw = (
+        action_data.get("duration_ms")
+        or action_data.get("duration")
+        or 3000
+    )
+
+    try:
+        duration = float(raw)
+    except (TypeError, ValueError):
+        duration = 3000.0
+
+    # If the model supplied a small number, it probably meant seconds.
+    if 0 < duration <= 20:
+        duration *= 1000.0
+
+    return int(
+        max(
+            1000,
+            min(
+                6000,
+                duration,
+            ),
+        )
+    )
+
+
+
+# ---------------------------------------------------------------------------
+# Expression fallback inference
+# ---------------------------------------------------------------------------
+# Qwen does not always choose set_expression even when an emotional reaction
+# is obvious. This lightweight fallback gives BMO a face on ordinary replies
+# without requiring a second LLM call.
+def infer_expression_from_text(user_text: str, assistant_text: str):
+    combined = (
+        f"{user_text} {assistant_text}"
+        .lower()
+    )
+
+    happy_patterns = (
+        "awesome",
+        "amazing",
+        "great news",
+        "good news",
+        "yay",
+        "woohoo",
+        "congrats",
+        "congratulations",
+        "fixed it",
+        "it works",
+        "worked!",
+        "love that",
+        "nice!",
+    )
+
+    sad_patterns = (
+        "dropped my sandwich",
+        "lost my",
+        "broke my",
+        "that sucks",
+        "that is sad",
+        "that's sad",
+        "sorry",
+        "oh no",
+        "unfortunately",
+        "bad news",
+        "died",
+        "failed",
+        "hurt",
+    )
+
+    surprised_patterns = (
+        "boo!",
+        "what?!",
+        "no way",
+        "seriously?!",
+        "surprise",
+        "shocked",
+        "unexpected",
+    )
+
+    angry_patterns = (
+        "furious",
+        "angry",
+        "so annoying",
+        "hate this",
+        "ridiculous",
+        "infuriating",
+    )
+
+    sleepy_patterns = (
+        "sleepy",
+        "tired",
+        "exhausted",
+        "going to bed",
+        "good night",
+        "goodnight",
+    )
+
+    daydream_patterns = (
+        "wonder",
+        "imagine",
+        "daydream",
+        "what if",
+        "dream about",
+    )
+
+    if any(
+        pattern in combined
+        for pattern in surprised_patterns
+    ):
+        return {
+            "type": "set_expression",
+            "expression": "surprised",
+            "duration_ms": 3000,
+        }
+
+    if any(
+        pattern in combined
+        for pattern in angry_patterns
+    ):
+        return {
+            "type": "set_expression",
+            "expression": "angry",
+            "duration_ms": 3000,
+        }
+
+    if any(
+        pattern in combined
+        for pattern in sad_patterns
+    ):
+        return {
+            "type": "set_expression",
+            "expression": "sad",
+            "duration_ms": 3000,
+        }
+
+    if any(
+        pattern in combined
+        for pattern in happy_patterns
+    ):
+        return {
+            "type": "set_expression",
+            "expression": "happy",
+            "duration_ms": 3000,
+        }
+
+    if any(
+        pattern in combined
+        for pattern in sleepy_patterns
+    ):
+        return {
+            "type": "set_expression",
+            "expression": "sleepy",
+            "duration_ms": 3000,
+        }
+
+    if any(
+        pattern in combined
+        for pattern in daydream_patterns
+    ):
+        return {
+            "type": "set_expression",
+            "expression": "daydream",
+            "duration_ms": 3000,
+        }
+
+    return None
+
+
 def execute_server_action(action_data, user_text=""):
     """
     Execute actions that belong on BMO's Mac brain.
@@ -586,6 +809,8 @@ def execute_server_action(action_data, user_text=""):
     value = (
         action_data.get("value")
         or action_data.get("query")
+        or action_data.get("expression")
+        or action_data.get("state")
         or ""
     )
 
@@ -597,6 +822,10 @@ def execute_server_action(action_data, user_text=""):
         "news": "search_web",
         "search_news": "search_web",
         "web_search": "search_web",
+        "expression": "set_expression",
+        "face": "set_expression",
+        "set_face": "set_expression",
+        "show_expression": "set_expression",
     }
 
     action = aliases.get(
@@ -646,6 +875,44 @@ def execute_server_action(action_data, user_text=""):
                 query,
                 user_text or query,
             ),
+        }
+
+    if action == "set_expression":
+        expression = normalize_expression(
+            value
+        )
+
+        if not expression:
+            logger.warning(
+                "Ignoring unsupported expression: %r",
+                value,
+            )
+
+            return {
+                "handled": False,
+                "action": action,
+                "response": None,
+            }
+
+        duration_ms = normalize_expression_duration(
+            action_data
+        )
+
+        logger.info(
+            "Expression action: %s for %sms",
+            expression,
+            duration_ms,
+        )
+
+        return {
+            "handled": True,
+            "action": action,
+            "response": None,
+            "client_action": {
+                "type": "set_expression",
+                "expression": expression,
+                "duration_ms": duration_ms,
+            },
         }
 
     # Do not silently swallow tools we have not migrated yet.
@@ -987,6 +1254,7 @@ def chat(request: ChatRequest, background_tasks: BackgroundTasks):
     # actions retain the old client-dispatch behaviour.
     is_action = False
     spoken_text = content
+    client_action = None
     action_data, span = extract_json_object(content)
 
     if action_data and "action" in action_data:
@@ -1001,9 +1269,27 @@ def chat(request: ChatRequest, background_tasks: BackgroundTasks):
         )
 
         if action_result["handled"]:
-            content = action_result["response"]
-            spoken_text = content
-            is_action = False
+            client_action = action_result.get(
+                "client_action"
+            )
+
+            action_response = action_result.get(
+                "response"
+            )
+
+            # UI-only actions such as set_expression often accompany a spoken
+            # lead-in. Preserve that natural text. Pure JSON expression actions
+            # stay silent while still reaching the Android/Web face.
+            if action_response is None:
+                content = lead_in_text
+                spoken_text = lead_in_text
+                is_action = not bool(
+                    lead_in_text
+                )
+            else:
+                content = action_response
+                spoken_text = content
+                is_action = False
 
             logger.info(
                 "Server action completed: %s -> %r",
@@ -1011,20 +1297,22 @@ def chat(request: ChatRequest, background_tasks: BackgroundTasks):
                 content,
             )
 
-            # brain.think() has already recorded the model's raw action JSON
-            # in its temporary history. Replace that final assistant message
-            # in the response history with the human-readable tool result so
-            # the Android/browser conversation stays clean.
+            # brain.think() already recorded the model's raw action JSON.
+            # Replace or remove that raw JSON so persistent memory remains
+            # conversational instead of filling up with internal tool payloads.
             response_history = brain.get_history()
             if (
                 response_history and
                 isinstance(response_history[-1], dict) and
                 response_history[-1].get("role") == "assistant"
             ):
-                response_history[-1] = {
-                    "role": "assistant",
-                    "content": content,
-                }
+                if content:
+                    response_history[-1] = {
+                        "role": "assistant",
+                        "content": content,
+                    }
+                else:
+                    response_history.pop()
         else:
             response_history = brain.get_history()
 
@@ -1074,11 +1362,28 @@ def chat(request: ChatRequest, background_tasks: BackgroundTasks):
         response_history
     )
 
-    return {
+    if client_action is None:
+        client_action = infer_expression_from_text(
+            user_text,
+            content,
+        )
+
+        if client_action is not None:
+            logger.info(
+                "Expression fallback inferred: %s",
+                client_action.get("expression"),
+            )
+
+    response_payload = {
         "response": content,
         "history": response_history,
-        "audio_url": audio_url
+        "audio_url": audio_url,
     }
+
+    if client_action is not None:
+        response_payload["action"] = client_action
+
+    return response_payload
 
 
 @app.get("/api/memory")
