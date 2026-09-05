@@ -17,7 +17,7 @@ const BACKEND_RECOVERY_MAX_WAIT_MS = 30000;
 const TIMER_EVENT_CHECK_INTERVAL_MS = 1000;
 const DEVICE_STATE_CHECK_INTERVAL_MS = 3000;
 const CHARGER_REACTION_DURATION_MS = 3200;
-const CHARGER_REACTION_COOLDOWN_MS = 10000;
+const CHARGER_REACTION_COOLDOWN_MS = 1500;
 
 const DAYDREAM_IDLE_MS = 90000;
 const DAYDREAM_THOUGHT_INTERVAL_MS = 120000;
@@ -4350,6 +4350,61 @@ window.onNativeMicError =
 
 
 /*
+ * Android charger callbacks
+ */
+
+window.onNativePowerStateChanged =
+    function (
+        state
+    ) {
+        try {
+            const charging =
+                Boolean(
+                    state &&
+                    state.charging
+                );
+
+            const batteryPercent =
+                Number(
+                    state &&
+                    state.battery_percent
+                );
+
+            console.log(
+                "Native Android power event:",
+                {
+                    charging:
+                        charging,
+
+                    battery_percent:
+                        batteryPercent,
+                }
+            );
+
+            /*
+             * Keep the polling state synchronized so the next
+             * battery poll does not interpret the same transition
+             * as a second charger event.
+             */
+            lastBatteryChargingState =
+                charging;
+
+            showChargerReaction(
+                charging,
+                batteryPercent
+            );
+
+        } catch (
+            error
+        ) {
+            console.error(
+                "Native Android power event failed:",
+                error
+            );
+        }
+    };
+
+/*
  * Android vision callbacks
  */
 
@@ -5027,5 +5082,955 @@ loadBmoPersonalitySounds()
 
 // ============================================================================
 // END BMO PERSONALITY SOUNDS
+// ============================================================================
+
+// ============================================================================
+// BMO HIDDEN DEVELOPER PANEL
+// ============================================================================
+
+const BMO_DEBUG_CONFIG = {
+    cornerSizePx:
+        90,
+
+    requiredTaps:
+        5,
+
+    tapWindowMs:
+        2600,
+
+    refreshIntervalMs:
+        1000
+};
+
+
+let bmoDebugTapTimes =
+    [];
+
+let bmoDebugPanelOpen =
+    false;
+
+let bmoDebugRefreshTimer =
+    null;
+
+
+function createBmoDebugPanel() {
+    if (
+        document.getElementById(
+            "bmo-debug-overlay"
+        )
+    ) {
+        return;
+    }
+
+    const style =
+        document.createElement(
+            "style"
+        );
+
+    style.id =
+        "bmo-debug-style";
+
+    style.textContent =
+        `
+        #bmo-debug-overlay {
+            position: fixed;
+            inset: 0;
+            z-index: 999999;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            padding: 22px;
+            box-sizing: border-box;
+            background: rgba(0, 0, 0, 0.58);
+            font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        }
+
+        #bmo-debug-overlay.open {
+            display: flex;
+        }
+
+        #bmo-debug-panel {
+            width: min(760px, 96vw);
+            height: 88vh;
+            max-height: 88vh;
+            overflow-y: scroll;
+            overflow-x: hidden;
+            -webkit-overflow-scrolling: touch;
+            touch-action: pan-y;
+            overscroll-behavior: contain;
+            box-sizing: border-box;
+            padding: 22px;
+            border: 4px solid #111;
+            border-radius: 18px;
+            background: #c9e4c3;
+            color: #111;
+            box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+        }
+
+        #bmo-debug-panel * {
+            box-sizing: border-box;
+        }
+
+        .bmo-debug-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 16px;
+            margin-bottom: 18px;
+        }
+
+        .bmo-debug-title {
+            margin: 0;
+            font-size: 30px;
+            line-height: 1;
+        }
+
+        .bmo-debug-close {
+            border: 3px solid #111;
+            border-radius: 12px;
+            padding: 8px 14px;
+            background: #fff;
+            color: #111;
+            font-size: 20px;
+            font-weight: 800;
+        }
+
+        .bmo-debug-status-grid {
+            display: grid;
+            grid-template-columns: minmax(120px, 0.8fr) minmax(180px, 1.2fr);
+            gap: 8px 14px;
+            margin-bottom: 20px;
+            padding: 14px;
+            border: 3px solid #111;
+            border-radius: 14px;
+            background: rgba(255, 255, 255, 0.5);
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            font-size: 16px;
+        }
+
+        .bmo-debug-label {
+            font-weight: 800;
+        }
+
+        .bmo-debug-value {
+            overflow-wrap: anywhere;
+        }
+
+        .bmo-debug-section-title {
+            margin: 18px 0 10px;
+            font-size: 18px;
+            font-weight: 900;
+            text-transform: uppercase;
+            letter-spacing: 0.04em;
+        }
+
+        .bmo-debug-buttons {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+            gap: 10px;
+        }
+
+        .bmo-debug-button {
+            border: 3px solid #111;
+            border-radius: 12px;
+            min-height: 48px;
+            padding: 8px 10px;
+            background: #fff;
+            color: #111;
+            font-size: 16px;
+            font-weight: 800;
+        }
+
+        .bmo-debug-button:active {
+            transform: translateY(1px);
+        }
+
+        .bmo-debug-hint {
+            margin-top: 18px;
+            opacity: 0.75;
+            font-size: 14px;
+            text-align: center;
+        }
+        `;
+
+    document.head.appendChild(
+        style
+    );
+
+
+    const overlay =
+        document.createElement(
+            "div"
+        );
+
+    overlay.id =
+        "bmo-debug-overlay";
+
+    overlay.innerHTML =
+        `
+        <div id="bmo-debug-panel">
+            <div class="bmo-debug-header">
+                <h2 class="bmo-debug-title">
+                    BMO DEBUG
+                </h2>
+
+                <button
+                    type="button"
+                    id="bmo-debug-close"
+                    class="bmo-debug-close"
+                >
+                    Close
+                </button>
+            </div>
+
+            <div class="bmo-debug-status-grid">
+                <div class="bmo-debug-label">Backend</div>
+                <div class="bmo-debug-value" id="bmo-debug-backend">...</div>
+
+                <div class="bmo-debug-label">Android bridge</div>
+                <div class="bmo-debug-value" id="bmo-debug-bridge">...</div>
+
+                <div class="bmo-debug-label">Wake listener</div>
+                <div class="bmo-debug-value" id="bmo-debug-wake">...</div>
+
+                <div class="bmo-debug-label">Network</div>
+                <div class="bmo-debug-value" id="bmo-debug-network">...</div>
+
+                <div class="bmo-debug-label">Battery</div>
+                <div class="bmo-debug-value" id="bmo-debug-battery">...</div>
+
+                <div class="bmo-debug-label">Face</div>
+                <div class="bmo-debug-value" id="bmo-debug-face">...</div>
+
+                <div class="bmo-debug-label">Recording</div>
+                <div class="bmo-debug-value" id="bmo-debug-recording">...</div>
+
+                <div class="bmo-debug-label">BMO audio</div>
+                <div class="bmo-debug-value" id="bmo-debug-audio">...</div>
+            </div>
+
+            <div class="bmo-debug-section-title">
+                Face tests
+            </div>
+
+            <div
+                class="bmo-debug-buttons"
+                id="bmo-debug-face-buttons"
+            ></div>
+
+            <div class="bmo-debug-section-title">
+                Personality sounds
+            </div>
+
+            <div class="bmo-debug-buttons">
+                <button
+                    type="button"
+                    class="bmo-debug-button"
+                    data-bmo-sound="greeting_sounds"
+                >
+                    Greeting
+                </button>
+
+                <button
+                    type="button"
+                    class="bmo-debug-button"
+                    data-bmo-sound="ack_sounds"
+                >
+                    Ack
+                </button>
+
+                <button
+                    type="button"
+                    class="bmo-debug-button"
+                    data-bmo-sound="thinking_sounds"
+                >
+                    Thinking
+                </button>
+
+                <button
+                    type="button"
+                    class="bmo-debug-button"
+                    data-bmo-sound="error_sounds"
+                >
+                    Error
+                </button>
+            </div>
+
+            <div class="bmo-debug-section-title">
+                Utilities
+            </div>
+
+            <div class="bmo-debug-buttons">
+                <button
+                    type="button"
+                    class="bmo-debug-button"
+                    id="bmo-debug-refresh"
+                >
+                    Refresh status
+                </button>
+
+                <button
+                    type="button"
+                    class="bmo-debug-button"
+                    id="bmo-debug-stop-sound"
+                >
+                    Stop personality sound
+                </button>
+
+                <button
+                    type="button"
+                    class="bmo-debug-button"
+                    id="bmo-debug-return-idle"
+                >
+                    Return to idle
+                </button>
+            </div>
+
+            <div class="bmo-debug-hint">
+                Secret entrance: tap the top-right corner 5 times.
+            </div>
+        </div>
+        `;
+
+    document.body.appendChild(
+        overlay
+    );
+
+
+    const faceButtons =
+        document.getElementById(
+            "bmo-debug-face-buttons"
+        );
+
+    const debugExpressions = [
+        "idle",
+        "happy",
+        "sad",
+        "angry",
+        "surprised",
+        "curious",
+        "heart",
+        "starry_eyed",
+        "confused",
+        "sleepy",
+        "daydream",
+        "dizzy",
+        "cheeky",
+        "shhh",
+        "jamming",
+        "low_battery",
+        "bee",
+        "ladybug",
+        "worm",
+        "error",
+    ];
+
+    for (
+        const expression
+        of debugExpressions
+    ) {
+        const button =
+            document.createElement(
+                "button"
+            );
+
+        button.type =
+            "button";
+
+        button.className =
+            "bmo-debug-button";
+
+        button.textContent =
+            expression.replace(
+                /_/g,
+                " "
+            );
+
+        button.addEventListener(
+            "click",
+            () => {
+                stopDaydream(
+                    false
+                );
+
+                setFaceState(
+                    expression
+                );
+
+                refreshBmoDebugStatus();
+            }
+        );
+
+        faceButtons.appendChild(
+            button
+        );
+    }
+
+
+    overlay.addEventListener(
+        "pointerdown",
+        (event) => {
+            event.stopPropagation();
+        },
+        false
+    );
+
+    overlay.addEventListener(
+        "pointerup",
+        (event) => {
+            event.stopPropagation();
+        },
+        false
+    );
+
+    overlay.addEventListener(
+        "touchmove",
+        (event) => {
+            /*
+             * Intentionally do not preventDefault().
+             * The debug panel needs native WebView touch scrolling.
+             */
+            event.stopPropagation();
+        },
+        {
+            passive: true
+        }
+    );
+
+
+    /*
+     * Android 8-era WebViews can be unreliable with nested
+     * overflow scrolling inside a fullscreen touch interface.
+     *
+     * Give the debug panel its own simple finger-drag scrolling
+     * so it works regardless of WebView native scroll behaviour.
+     */
+    const debugPanel =
+        document.getElementById(
+            "bmo-debug-panel"
+        );
+
+    let debugTouchLastY =
+        null;
+
+    let debugTouchMoved =
+        false;
+
+
+    debugPanel.addEventListener(
+        "touchstart",
+        (event) => {
+            if (
+                !event.touches ||
+                event.touches.length !==
+                    1
+            ) {
+                return;
+            }
+
+            debugTouchLastY =
+                event.touches[0]
+                    .clientY;
+
+            debugTouchMoved =
+                false;
+        },
+        {
+            passive:
+                true
+        }
+    );
+
+
+    debugPanel.addEventListener(
+        "touchmove",
+        (event) => {
+            if (
+                debugTouchLastY ===
+                    null ||
+                !event.touches ||
+                event.touches.length !==
+                    1
+            ) {
+                return;
+            }
+
+            const currentY =
+                event.touches[0]
+                    .clientY;
+
+            const deltaY =
+                debugTouchLastY -
+                currentY;
+
+            if (
+                Math.abs(
+                    deltaY
+                ) >
+                1
+            ) {
+                debugTouchMoved =
+                    true;
+            }
+
+            debugPanel.scrollTop +=
+                deltaY;
+
+            debugTouchLastY =
+                currentY;
+
+            /*
+             * Prevent the fullscreen BMO interface from treating
+             * this drag as a gesture intended for the face.
+             */
+            event.preventDefault();
+
+            event.stopPropagation();
+        },
+        {
+            passive:
+                false
+        }
+    );
+
+
+    debugPanel.addEventListener(
+        "touchend",
+        () => {
+            debugTouchLastY =
+                null;
+
+            /*
+             * Clear this shortly after the gesture so normal
+             * button taps continue to work.
+             */
+            setTimeout(
+                () => {
+                    debugTouchMoved =
+                        false;
+                },
+                100
+            );
+        },
+        {
+            passive:
+                true
+        }
+    );
+
+
+    document.getElementById(
+        "bmo-debug-close"
+    ).addEventListener(
+        "click",
+        closeBmoDebugPanel
+    );
+
+
+    document.getElementById(
+        "bmo-debug-refresh"
+    ).addEventListener(
+        "click",
+        refreshBmoDebugStatus
+    );
+
+
+    document.getElementById(
+        "bmo-debug-stop-sound"
+    ).addEventListener(
+        "click",
+        () => {
+            stopBmoPersonalitySound();
+
+            refreshBmoDebugStatus();
+        }
+    );
+
+
+    document.getElementById(
+        "bmo-debug-return-idle"
+    ).addEventListener(
+        "click",
+        () => {
+            stopDaydream(
+                false
+            );
+
+            setFaceState(
+                "idle"
+            );
+
+            showStatus(
+                "Debug: idle",
+                900
+            );
+
+            refreshBmoDebugStatus();
+        }
+    );
+
+
+    for (
+        const button
+        of overlay.querySelectorAll(
+            "[data-bmo-sound]"
+        )
+    ) {
+        button.addEventListener(
+            "click",
+            () => {
+                const category =
+                    button.getAttribute(
+                        "data-bmo-sound"
+                    );
+
+                const volume =
+                    category ===
+                        "greeting_sounds"
+                        ? BMO_SOUND_CONFIG
+                            .greetingVolume
+                        : category ===
+                            "thinking_sounds"
+                            ? BMO_SOUND_CONFIG
+                                .thinkingVolume
+                            : category ===
+                                "error_sounds"
+                                ? BMO_SOUND_CONFIG
+                                    .errorVolume
+                                : BMO_SOUND_CONFIG
+                                    .acknowledgementVolume;
+
+                playBmoPersonalitySound(
+                    category,
+                    volume
+                );
+            }
+        );
+    }
+}
+
+
+function refreshBmoDebugStatus() {
+    const setValue =
+        (
+            id,
+            value
+        ) => {
+            const element =
+                document.getElementById(
+                    id
+                );
+
+            if (
+                element
+            ) {
+                element.textContent =
+                    String(
+                        value
+                    );
+            }
+        };
+
+
+    setValue(
+        "bmo-debug-backend",
+        backendOnline
+            ? "✓ online"
+            : "✗ offline"
+    );
+
+
+    const nativeBridge =
+        getNativeBridge();
+
+    setValue(
+        "bmo-debug-bridge",
+        nativeBridge
+            ? "✓ available"
+            : "✗ unavailable"
+    );
+
+
+    setValue(
+        "bmo-debug-wake",
+        nativeBridge
+            ? "Android-managed"
+            : "browser / unavailable"
+    );
+
+
+    setValue(
+        "bmo-debug-face",
+        bmoRenderer.state
+    );
+
+
+    setValue(
+        "bmo-debug-recording",
+        isRecording
+            ? "● recording"
+            : recordingStartPending
+                ? "starting..."
+                : "idle"
+    );
+
+
+    setValue(
+        "bmo-debug-audio",
+        currentAudio
+            ? "playing"
+            : "idle"
+    );
+
+
+    if (
+        nativeBridge
+    ) {
+        try {
+            const battery =
+                readNativeBatteryState();
+
+            const percent =
+                Number(
+                    battery.battery_percent
+                );
+
+            const charging =
+                Boolean(
+                    battery.charging
+                );
+
+            setValue(
+                "bmo-debug-battery",
+                Number.isFinite(
+                    percent
+                )
+                    ? `${percent}% ${charging ? "charging" : "battery"}`
+                    : "unknown"
+            );
+
+        } catch (
+            error
+        ) {
+            setValue(
+                "bmo-debug-battery",
+                "unavailable"
+            );
+        }
+
+
+        try {
+            const network =
+                readNativeNetworkState();
+
+            if (
+                network.connected
+            ) {
+                setValue(
+                    "bmo-debug-network",
+                    `✓ ${network.network_type || "connected"}`
+                );
+
+            } else {
+                setValue(
+                    "bmo-debug-network",
+                    "✗ disconnected"
+                );
+            }
+
+        } catch (
+            error
+        ) {
+            setValue(
+                "bmo-debug-network",
+                "unavailable"
+            );
+        }
+
+    } else {
+        setValue(
+            "bmo-debug-battery",
+            "native only"
+        );
+
+        setValue(
+            "bmo-debug-network",
+            navigator.onLine
+                ? "browser online"
+                : "browser offline"
+        );
+    }
+}
+
+
+function openBmoDebugPanel() {
+    createBmoDebugPanel();
+
+    const overlay =
+        document.getElementById(
+            "bmo-debug-overlay"
+        );
+
+    if (
+        !overlay
+    ) {
+        return;
+    }
+
+    bmoDebugPanelOpen =
+        true;
+
+    overlay.classList.add(
+        "open"
+    );
+
+    stopDaydream(
+        false
+    );
+
+    clearTimeout(
+        daydreamTimer
+    );
+
+    daydreamTimer =
+        null;
+
+    refreshBmoDebugStatus();
+
+    clearInterval(
+        bmoDebugRefreshTimer
+    );
+
+    bmoDebugRefreshTimer =
+        setInterval(
+            refreshBmoDebugStatus,
+            BMO_DEBUG_CONFIG
+                .refreshIntervalMs
+        );
+
+    console.log(
+        "BMO debug panel opened"
+    );
+}
+
+
+function closeBmoDebugPanel() {
+    const overlay =
+        document.getElementById(
+            "bmo-debug-overlay"
+        );
+
+    if (
+        overlay
+    ) {
+        overlay.classList.remove(
+            "open"
+        );
+    }
+
+    bmoDebugPanelOpen =
+        false;
+
+    clearInterval(
+        bmoDebugRefreshTimer
+    );
+
+    bmoDebugRefreshTimer =
+        null;
+
+    resetDaydreamTimer();
+
+    console.log(
+        "BMO debug panel closed"
+    );
+}
+
+
+function registerBmoDebugCornerTap(
+    event
+) {
+    if (
+        bmoDebugPanelOpen
+    ) {
+        return;
+    }
+
+    const cornerSize =
+        BMO_DEBUG_CONFIG
+            .cornerSizePx;
+
+    const isTopRight =
+        event.clientX >=
+            window.innerWidth -
+                cornerSize &&
+        event.clientY <=
+            cornerSize;
+
+    if (
+        !isTopRight
+    ) {
+        return;
+    }
+
+    event.preventDefault();
+
+    event.stopPropagation();
+
+    if (
+        typeof event.stopImmediatePropagation ===
+        "function"
+    ) {
+        event.stopImmediatePropagation();
+    }
+
+
+    const now =
+        Date.now();
+
+    bmoDebugTapTimes =
+        bmoDebugTapTimes
+            .filter(
+                (time) =>
+                    now -
+                        time <=
+                    BMO_DEBUG_CONFIG
+                        .tapWindowMs
+            );
+
+    bmoDebugTapTimes.push(
+        now
+    );
+
+    console.log(
+        "BMO debug corner tap:",
+        bmoDebugTapTimes.length
+    );
+
+    if (
+        bmoDebugTapTimes.length >=
+        BMO_DEBUG_CONFIG
+            .requiredTaps
+    ) {
+        bmoDebugTapTimes = [];
+
+        openBmoDebugPanel();
+    }
+}
+
+
+document.addEventListener(
+    "pointerdown",
+    registerBmoDebugCornerTap,
+    true
+);
+
+
+console.log(
+    "BMO hidden developer panel ready"
+);
+
+
+// ============================================================================
+// END BMO HIDDEN DEVELOPER PANEL
 // ============================================================================
 
