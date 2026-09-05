@@ -1,6 +1,8 @@
 package com.sapphi.bmo
 
 import android.Manifest
+import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.view.Surface
 import android.graphics.SurfaceTexture
@@ -8,6 +10,8 @@ import android.hardware.Camera
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
+import android.net.ConnectivityManager
+import android.os.BatteryManager
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -1315,6 +1319,172 @@ class MainActivity : AppCompatActivity() {
 
     /*
      * =====================================================================
+     * Native Android device state
+     * =====================================================================
+     */
+
+    private fun getBatteryStateJson(): String {
+        val batteryIntent =
+            registerReceiver(
+                null,
+                IntentFilter(
+                    Intent.ACTION_BATTERY_CHANGED
+                )
+            )
+
+        if (
+            batteryIntent == null
+        ) {
+            return JSONObject()
+                .put(
+                    "available",
+                    false
+                )
+                .put(
+                    "battery_percent",
+                    JSONObject.NULL
+                )
+                .put(
+                    "charging",
+                    JSONObject.NULL
+                )
+                .toString()
+        }
+
+        val level =
+            batteryIntent.getIntExtra(
+                BatteryManager.EXTRA_LEVEL,
+                -1
+            )
+
+        val scale =
+            batteryIntent.getIntExtra(
+                BatteryManager.EXTRA_SCALE,
+                -1
+            )
+
+        val status =
+            batteryIntent.getIntExtra(
+                BatteryManager.EXTRA_STATUS,
+                BatteryManager.BATTERY_STATUS_UNKNOWN
+            )
+
+        val batteryPercent =
+            if (
+                level >= 0 &&
+                scale > 0
+            ) {
+                (
+                        level *
+                                100f /
+                                scale
+                        ).toInt()
+
+            } else {
+                -1
+            }
+
+        val charging =
+            status ==
+                    BatteryManager.BATTERY_STATUS_CHARGING ||
+                    status ==
+                    BatteryManager.BATTERY_STATUS_FULL
+
+        return JSONObject()
+            .put(
+                "available",
+                batteryPercent >= 0
+            )
+            .put(
+                "battery_percent",
+                if (
+                    batteryPercent >= 0
+                ) {
+                    batteryPercent
+                } else {
+                    JSONObject.NULL
+                }
+            )
+            .put(
+                "charging",
+                charging
+            )
+            .toString()
+    }
+
+
+
+    private fun getNetworkStateJson(): String {
+        val connectivityManager =
+            getSystemService(
+                CONNECTIVITY_SERVICE
+            ) as ConnectivityManager
+
+        @Suppress(
+            "DEPRECATION"
+        )
+        val networkInfo =
+            connectivityManager.activeNetworkInfo
+
+        if (
+            networkInfo == null ||
+            !networkInfo.isConnected
+        ) {
+            return JSONObject()
+                .put(
+                    "available",
+                    true
+                )
+                .put(
+                    "connected",
+                    false
+                )
+                .put(
+                    "network_type",
+                    "none"
+                )
+                .toString()
+        }
+
+        @Suppress(
+            "DEPRECATION"
+        )
+        val networkType =
+            when (
+                networkInfo.type
+            ) {
+                ConnectivityManager.TYPE_WIFI ->
+                    "wifi"
+
+                ConnectivityManager.TYPE_MOBILE ->
+                    "mobile"
+
+                ConnectivityManager.TYPE_ETHERNET ->
+                    "ethernet"
+
+                else ->
+                    "other"
+            }
+
+        return JSONObject()
+            .put(
+                "available",
+                true
+            )
+            .put(
+                "connected",
+                true
+            )
+            .put(
+                "network_type",
+                networkType
+            )
+            .toString()
+    }
+
+
+    /*
+     * =====================================================================
      * JavaScript bridge
      * =====================================================================
      */
@@ -1340,6 +1510,18 @@ class MainActivity : AppCompatActivity() {
             runOnUiThread {
                 stopNativeRecording()
             }
+        }
+
+
+        @JavascriptInterface
+        fun getBatteryState(): String {
+            return getBatteryStateJson()
+        }
+
+
+        @JavascriptInterface
+        fun getNetworkState(): String {
+            return getNetworkStateJson()
         }
 
 
