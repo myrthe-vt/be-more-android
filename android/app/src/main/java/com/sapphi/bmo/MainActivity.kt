@@ -210,6 +210,15 @@ class MainActivity : AppCompatActivity() {
         setupWebView()
 
         /*
+         * Drop any stale HTML/JavaScript cached by the old Android WebView.
+         * This is especially important while face.js is under active
+         * development.
+         */
+        webView.clearCache(
+            true
+        )
+
+        /*
          * Always verify the Mac before loading the remote BMO page.
          */
         showConnectingPage()
@@ -271,8 +280,13 @@ class MainActivity : AppCompatActivity() {
             mediaPlaybackRequiresUserGesture =
                 false
 
+            /*
+             * During development BMO's face.js changes frequently.
+             * LOAD_NO_CACHE prevents the LG G7 WebView from silently
+             * reusing an older JavaScript bundle after app/backend restarts.
+             */
             cacheMode =
-                WebSettings.LOAD_DEFAULT
+                WebSettings.LOAD_NO_CACHE
 
             useWideViewPort =
                 true
