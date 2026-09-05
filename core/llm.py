@@ -1080,11 +1080,26 @@ class Brain:
             return content
 
         except FileNotFoundError as e:
-            logger.warning(f"VLM HEF not found: {e}")
-            return "BMO's vision model isn't installed yet. Run setup.sh to download it!"
+            logger.warning(
+                f"VLM HEF not found: {e}. Falling back to Ollama vision."
+            )
+
+            return self._analyze_image_with_ollama(
+                image_base64,
+                user_text,
+            )
+
         except Exception as e:
-            logger.error(f"VLM Exception: {e}", exc_info=True)
-            return "I tried to look, but my eyes aren't working right now."
+            logger.error(
+                f"VLM Exception: {e}. Falling back to Ollama vision.",
+                exc_info=True,
+            )
+
+            return self._analyze_image_with_ollama(
+                image_base64,
+                user_text,
+            )
+
         finally:
             # Hand the NPU back to hailo-ollama, but never while an inference
             # thread is still touching the device — releasing under it segfaults.
@@ -1098,3 +1113,100 @@ class Brain:
             if not assistant_appended:
                 if self.history and self.history[-1].get("role") == "user":
                     self.history.pop()
+
+    def _analyze_image_with_ollama(
+        self,
+        image_base64: str,
+        user_text: str,
+    ) -> str:
+        """
+        Fallback vision path for non-Hailo systems such as the Mac.
+
+        Uses the configured Ollama vision model, typically moondream.
+        """
+        try:
+            logger.info(
+                "Running fallback vision through Ollama model: %s",
+                VISION_MODEL,
+            )
+
+            payload = {
+                "model": VISION_MODEL,
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": (
+                            "You are BMO, a cute and helpful robot assistant. "
+                            "Describe what you see concisely and conversationally."
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            user_text
+                            or "What do you see in this image?"
+                        ),
+                        "images": [
+                            image_base64
+                        ],
+                    },
+                ],
+                "stream": False,
+                "options": {
+                    "temperature": 0.4,
+                    "num_predict": 150,
+                },
+            }
+
+            response = requests.post(
+                LLM_URL,
+                json=payload,
+                timeout=60,
+            )
+
+            response.raise_for_status()
+
+            data = response.json()
+
+            content = (
+                data.get(
+                    "message",
+                    {},
+                ).get(
+                    "content",
+                    "",
+                )
+                or ""
+            ).strip()
+
+            if not content:
+                return (
+                    "I looked, but I couldn't quite "
+                    "figure out what I was seeing."
+                )
+
+            logger.info(
+                "Ollama vision response (%s chars): %s...",
+                len(content),
+                content[:120],
+            )
+
+            self.history.append(
+                {
+                    "role": "assistant",
+                    "content": content,
+                }
+            )
+
+            return content
+
+        except Exception as e:
+            logger.error(
+                f"Ollama vision fallback failed: {e}",
+                exc_info=True,
+            )
+
+            return (
+                "I tried to look, but my eyes "
+                "aren't working right now."
+            )

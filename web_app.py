@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Request, BackgroundTasks, UploadFile, File, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, BackgroundTasks, UploadFile, File, Form, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -15,6 +15,7 @@ import subprocess
 import datetime
 import threading
 import queue
+import base64
 import re
 
 # Import our new unified core modules
@@ -826,6 +827,11 @@ def execute_server_action(action_data, user_text=""):
         "face": "set_expression",
         "set_face": "set_expression",
         "show_expression": "set_expression",
+        "look": "capture_image",
+        "see": "capture_image",
+        "camera": "capture_image",
+        "take_picture": "capture_image",
+        "take_photo": "capture_image",
     }
 
     action = aliases.get(
@@ -875,6 +881,24 @@ def execute_server_action(action_data, user_text=""):
                 query,
                 user_text or query,
             ),
+        }
+
+    if action == "capture_image":
+        logger.info(
+            "Vision action requested from Android body"
+        )
+
+        return {
+            "handled": True,
+            "action": action,
+            "response": None,
+            "client_action": {
+                "type": "capture_image",
+                "prompt": (
+                    str(user_text).strip()
+                    or "What are you looking at?"
+                ),
+            },
         }
 
     if action == "set_expression":
@@ -1010,6 +1034,34 @@ def get_timer_events():
     }
 
 
+VISION_REQUEST_PATTERNS = (
+    "what are you looking at",
+    "what do you see",
+    "what can you see",
+    "look at this",
+    "look at that",
+    "take a look",
+    "use your camera",
+    "take a picture",
+    "take a photo",
+    "what is in front of you",
+    "what's in front of you",
+)
+
+
+def is_vision_request(text):
+    normalized = (
+        str(text or "")
+        .strip()
+        .lower()
+    )
+
+    return any(
+        pattern in normalized
+        for pattern in VISION_REQUEST_PATTERNS
+    )
+
+
 @app.post("/api/chat")
 # Sync def on purpose: brain.think() blocks for tens of seconds on the NPU.
 # As `async def` it would block uvicorn's event loop, freezing /api/status, the
@@ -1073,6 +1125,38 @@ def chat(request: ChatRequest, background_tasks: BackgroundTasks):
             "audio_url": audio_url,
             "action": {
                 "type": "memory_cleared",
+            },
+        }
+
+    # ------------------------------------------------------------------
+    # Deterministic Android camera / vision routing
+    # ------------------------------------------------------------------
+    if is_vision_request(
+        user_text
+    ):
+        response_history = save_android_memory(
+            list(
+                persistent_history
+            ) + [
+                {
+                    "role": "user",
+                    "content": user_text,
+                }
+            ]
+        )
+
+        logger.info(
+            "Deterministic vision request: %r",
+            user_text,
+        )
+
+        return {
+            "response": "",
+            "history": response_history,
+            "audio_url": None,
+            "action": {
+                "type": "capture_image",
+                "prompt": user_text,
             },
         }
 
@@ -1406,6 +1490,162 @@ def clear_android_memory_endpoint():
     return {
         "status": "cleared",
     }
+
+
+@app.post("/api/vision")
+def vision(
+    background_tasks: BackgroundTasks,
+    image: UploadFile = File(...),
+    prompt: str = Form("What are you looking at?"),
+):
+    """Analyze one still image captured by the Android BMO body."""
+    try:
+        image_bytes = image.file.read()
+
+        if not image_bytes:
+            return {
+                "error": "No image data received."
+            }
+
+        logger.info(
+            "Received Android camera image: %s bytes",
+            len(image_bytes),
+        )
+
+        encoded_image = base64.b64encode(
+            image_bytes
+        ).decode(
+            "ascii"
+        )
+
+        current_history = load_android_memory()
+
+        brain = Brain(
+            persist=False
+        )
+
+        brain.set_history(
+            current_history
+        )
+
+        vision_prompt = (
+            str(prompt or "")
+            .strip()
+            or "What are you looking at?"
+        )
+
+        content = brain.analyze_image(
+            encoded_image,
+            vision_prompt,
+        )
+
+        if not isinstance(
+            content,
+            str,
+        ):
+            content = str(
+                content
+            )
+
+        content = content.strip()
+
+        if not content:
+            content = (
+                "BMO looked very carefully, "
+                "but couldn't figure out what was there."
+            )
+
+        if (
+            content.startswith("Error:")
+            or content.startswith("Could not connect")
+            or content.startswith("I'm having trouble")
+        ):
+            return {
+                "error": content,
+                "history": current_history,
+            }
+
+        updated_history = list(
+            current_history
+        )
+
+        # /api/chat already stores the camera-request user message.
+        # Avoid duplicating it here before appending the vision answer.
+        if not (
+            updated_history
+            and isinstance(
+                updated_history[-1],
+                dict,
+            )
+            and updated_history[-1].get("role") == "user"
+            and str(
+                updated_history[-1].get(
+                    "content",
+                    "",
+                )
+            ).strip() == vision_prompt
+        ):
+            updated_history.append(
+                {
+                    "role": "user",
+                    "content": vision_prompt,
+                }
+            )
+
+        updated_history.append(
+            {
+                "role": "assistant",
+                "content": content,
+            }
+        )
+
+        updated_history = save_android_memory(
+            updated_history
+        )
+
+        tts_content = (
+            clean_text_for_speech(
+                content
+            )
+            or content
+        )
+
+        background_tasks.add_task(
+            _cleanup_old_audio
+        )
+
+        filename = (
+            f"response_{uuid.uuid4().hex[:8]}.wav"
+        )
+
+        audio_url = generate_audio_file(
+            tts_content,
+            filename,
+        )
+
+        client_action = infer_expression_from_text(
+            vision_prompt,
+            content,
+        )
+
+        return {
+            "response": content,
+            "history": updated_history,
+            "audio_url": audio_url,
+            "action": client_action,
+        }
+
+    except Exception as exception:
+        logger.exception(
+            "Vision endpoint failed"
+        )
+
+        return {
+            "error": (
+                "BMO's eyes had a little problem: "
+                f"{exception}"
+            )
+        }
 
 
 @app.post("/api/transcribe")

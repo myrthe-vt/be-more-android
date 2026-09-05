@@ -16,7 +16,7 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LLM_URL = "http://127.0.0.1:11434/api/chat"
 LLM_MODEL = "qwen2.5:7b" # Native Hailo model for all queries
 FAST_LLM_MODEL = "qwen2.5:7b" # Unify models to prevent NPU swap crashing
-VISION_MODEL = "qwen2-vl-instruct:2b" # Legacy Ollama name (unused — VLM runs via HailoRT directly)
+VISION_MODEL = "moondream:latest" # Legacy Ollama name (unused — VLM runs via HailoRT directly)
 
 # VLM (Vision Language Model) Settings — uses HailoRT Python API directly
 # The HEF file is a precompiled model binary from Hailo's model zoo
