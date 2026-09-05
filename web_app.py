@@ -25,6 +25,7 @@ from core.stt import transcribe_audio
 from core.config import LLM_URL, FAST_LLM_MODEL, WAKE_WORD_MODEL, WAKE_WORD_THRESHOLD
 from core.timers import parse_timer_request, describe_duration
 from core.search import search_web
+from core.homelab_router import is_homelab_request, handle_homelab_request
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -1239,6 +1240,70 @@ def chat(request: ChatRequest, background_tasks: BackgroundTasks):
                 "message": timer_message,
             },
         }
+
+    # ------------------------------------------------------------------
+    # Deterministic read-only homelab routing
+    # ------------------------------------------------------------------
+    # Keep homelab inspection deterministic and allow-listed. The LLM never
+    # receives arbitrary shell access. core/homelab_router.py decides which
+    # approved read-only helper to call.
+    if is_homelab_request(
+        user_text
+    ):
+        logger.info(
+            "Pre-LLM homelab request matched: %r",
+            user_text,
+        )
+
+        response_text = handle_homelab_request(
+            user_text
+        )
+
+        # The router can return None if a phrase looked vaguely homelab-related
+        # but did not match a supported read-only request. In that case, let the
+        # normal BMO conversation path handle it instead of swallowing the turn.
+        if response_text:
+            response_history = append_memory_turn(
+                persistent_history,
+                user_text,
+                response_text,
+            )
+
+            audio_url = None
+            tts_content = (
+                clean_text_for_speech(
+                    response_text
+                )
+                or response_text
+            )
+
+            background_tasks.add_task(
+                _cleanup_old_audio
+            )
+
+            if play_on_hardware:
+                background_tasks.add_task(
+                    play_audio_on_hardware,
+                    tts_content,
+                )
+            else:
+                filename = (
+                    f"response_{uuid.uuid4().hex[:8]}.wav"
+                )
+
+                audio_url = generate_audio_file(
+                    tts_content,
+                    filename,
+                )
+
+            return {
+                "response": response_text,
+                "history": response_history,
+                "audio_url": audio_url,
+                "action": {
+                    "type": "homelab_status",
+                },
+            }
 
     # ------------------------------------------------------------------
     # Deterministic current-info / explicit web-search routing
