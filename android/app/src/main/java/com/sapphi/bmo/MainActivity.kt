@@ -82,23 +82,42 @@ class MainActivity : AppCompatActivity() {
         private const val WEBVIEW_RECOVERY_COOLDOWN_MS =
             20000L
 
-        private const val BMO_BASE_URL =
-            "http://bmo-backend.example:8000"
+        private val BMO_BASE_URL =
+            BuildConfig.BMO_BASE_URL
 
-        private const val BMO_URL =
+        private val BMO_URL =
             "$BMO_BASE_URL/static/face.html?native=1"
 
-        private const val STATUS_URL =
+        private val STATUS_URL =
             "$BMO_BASE_URL/api/status"
 
-        private const val CLIENT_ERROR_URL =
+        private val CLIENT_ERROR_URL =
             "$BMO_BASE_URL/api/client-error"
 
-        private const val TRANSCRIBE_URL =
+        private val TRANSCRIBE_URL =
             "$BMO_BASE_URL/api/transcribe"
 
-        private const val WAKEWORD_URL =
-            "ws://bmo-backend.example:8000/api/wakeword"
+        private val WAKEWORD_URL =
+            when {
+                BMO_BASE_URL.startsWith("https://") ->
+                    "wss://" +
+                        BMO_BASE_URL.removePrefix(
+                            "https://"
+                        ) +
+                        "/api/wakeword"
+
+                BMO_BASE_URL.startsWith("http://") ->
+                    "ws://" +
+                        BMO_BASE_URL.removePrefix(
+                            "http://"
+                        ) +
+                        "/api/wakeword"
+
+                else ->
+                    error(
+                        "Unsupported BMO_BASE_URL scheme"
+                    )
+            }
 
         private const val WAKE_SAMPLE_RATE =
             16000
@@ -1129,7 +1148,7 @@ showingBmoPage =
             <body>
                 <div>
                     <div class="face">
-                        ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¢ _ ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¢
+                        ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ _ ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢
                     </div>
 
                     <div class="message">
@@ -1209,7 +1228,7 @@ showingBmoPage =
             <body>
                 <div>
                     <div class="face">
-                        ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¢ _ ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¢
+                        ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢ _ ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã¢â‚¬Å¡Ãƒâ€šÃ‚Â¢
                     </div>
 
                     <div class="message">
