@@ -26,6 +26,16 @@ from core.config import LLM_URL, FAST_LLM_MODEL, WAKE_WORD_MODEL, WAKE_WORD_THRE
 from core.timers import parse_timer_request, describe_duration
 from core.search import search_web
 from core.homelab_router import is_homelab_request, handle_homelab_request
+from core.weather import (
+    WeatherError,
+    WeatherLocationNotFound,
+    get_weather,
+    get_weather_for_location,
+    format_current_weather,
+    format_today_forecast,
+    format_tomorrow_forecast,
+    format_rain_answer,
+)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -1880,6 +1890,148 @@ def is_vision_request(text):
     )
 
 
+# ---------------------------------------------------------------------------
+# BMO_WEATHER_ROUTER_V1
+# Deterministic local and named-location weather routing
+# ---------------------------------------------------------------------------
+
+def get_weather_intent(text):
+    normalized = (
+        str(text or "")
+        .strip()
+        .lower()
+    )
+
+    normalized = re.sub(
+        r"[.!?]+$",
+        "",
+        normalized,
+    ).strip()
+
+    if not normalized:
+        return None
+
+    weather_words = (
+        "weather",
+        "forecast",
+        "rain",
+        "raining",
+        "umbrella",
+        "temperature",
+    )
+
+    if not any(
+        word in normalized
+        for word in weather_words
+    ):
+        return None
+
+    location = None
+
+    location_match = re.search(
+        r"\bin\s+(.+?)"
+        r"(?:\s+(?:today|tomorrow))?$",
+        normalized,
+        re.IGNORECASE,
+    )
+
+    if location_match:
+        location = (
+            location_match
+            .group(1)
+            .strip(" ,")
+        )
+
+        if not location:
+            location = None
+
+    tomorrow = bool(
+        re.search(
+            r"\btomorrow\b",
+            normalized,
+        )
+    )
+
+    rain_request = bool(
+        re.search(
+            r"\b(?:rain|raining|umbrella)\b",
+            normalized,
+        )
+    )
+
+    if rain_request:
+        intent = (
+            "rain_tomorrow"
+            if tomorrow
+            else "rain_today"
+        )
+
+    elif tomorrow:
+        intent = "tomorrow"
+
+    elif (
+        re.search(
+            r"\btoday\b",
+            normalized,
+        )
+        or "forecast" in normalized
+    ):
+        intent = "today"
+
+    else:
+        intent = "current"
+
+    return {
+        "intent": intent,
+        "location": location,
+    }
+
+
+def handle_weather_request(
+    weather_request
+):
+    intent = weather_request[
+        "intent"
+    ]
+
+    location = weather_request.get(
+        "location"
+    )
+
+    if location:
+        weather = get_weather_for_location(
+            location
+        )
+    else:
+        weather = get_weather()
+
+    if intent == "rain_tomorrow":
+        return format_rain_answer(
+            weather,
+            tomorrow=True,
+        )
+
+    if intent == "rain_today":
+        return format_rain_answer(
+            weather,
+            tomorrow=False,
+        )
+
+    if intent == "tomorrow":
+        return format_tomorrow_forecast(
+            weather
+        )
+
+    if intent == "today":
+        return format_today_forecast(
+            weather
+        )
+
+    return format_current_weather(
+        weather
+    )
+
+
 @app.post("/api/chat")
 # Sync def on purpose: brain.think() blocks for tens of seconds on the NPU.
 # As `async def` it would block uvicorn's event loop, freezing /api/status, the
@@ -2312,6 +2464,117 @@ def chat(request: ChatRequest, background_tasks: BackgroundTasks):
             "action": {
                 "type": "capture_image",
                 "prompt": user_text,
+            },
+        }
+
+    # ------------------------------------------------------------------
+    # BMO_WEATHER_ROUTER_V1
+    # Deterministic local and named-location weather routing
+    # ------------------------------------------------------------------
+    weather_request = get_weather_intent(
+        user_text
+    )
+
+    if weather_request:
+        weather_intent = (
+            weather_request[
+                "intent"
+            ]
+        )
+
+        weather_location = (
+            weather_request.get(
+                "location"
+            )
+        )
+
+        logger.info(
+            "Deterministic weather request: "
+            "%r -> %s location=%r",
+            user_text,
+            weather_intent,
+            weather_location,
+        )
+
+        try:
+            response_text = (
+                handle_weather_request(
+                    weather_request
+                )
+            )
+
+        except WeatherLocationNotFound:
+            logger.info(
+                "Weather location not found: %r",
+                weather_location,
+            )
+
+            response_text = (
+                "I couldn't find that place."
+            )
+
+        except WeatherError:
+            logger.exception(
+                "Weather provider failed"
+            )
+
+            response_text = (
+                "I can't check the weather right now."
+            )
+
+        except Exception:
+            logger.exception(
+                "Unexpected weather request failure"
+            )
+
+            response_text = (
+                "I can't check the weather right now."
+            )
+
+        response_history = append_memory_turn(
+            persistent_history,
+            user_text,
+            response_text,
+        )
+
+        audio_url = None
+
+        tts_content = (
+            clean_text_for_speech(
+                response_text
+            )
+            or response_text
+        )
+
+        background_tasks.add_task(
+            _cleanup_old_audio
+        )
+
+        if play_on_hardware:
+            background_tasks.add_task(
+                play_audio_on_hardware,
+                tts_content,
+            )
+
+        else:
+            filename = (
+                f"response_"
+                f"{uuid.uuid4().hex[:8]}.wav"
+            )
+
+            audio_url = generate_audio_file(
+                tts_content,
+                filename,
+            )
+
+        return {
+            "response": response_text,
+            "history": response_history,
+            "audio_url": audio_url,
+            "action": {
+                "type": "weather",
+                "intent": weather_intent,
+                "location": weather_location,
             },
         }
 
