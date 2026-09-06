@@ -36,6 +36,14 @@ from core.weather import (
     format_tomorrow_forecast,
     format_rain_answer,
 )
+from core.calendar import (
+    CalendarError,
+    CalendarNotAuthorized,
+    format_today as format_calendar_today,
+    format_tomorrow as format_calendar_tomorrow,
+    format_next_event as format_calendar_next_event,
+    format_afternoon as format_calendar_afternoon,
+)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -1891,6 +1899,110 @@ def is_vision_request(text):
 
 
 # ---------------------------------------------------------------------------
+# BMO_CALENDAR_ROUTER_V1
+# Deterministic read-only calendar routing
+# ---------------------------------------------------------------------------
+
+def get_calendar_intent(text):
+    normalized = (
+        str(text or "")
+        .strip()
+        .lower()
+    )
+
+    normalized = re.sub(
+        r"[.!?]+$",
+        "",
+        normalized,
+    ).strip()
+
+    if not normalized:
+        return None
+
+    # Highly specific calendar/time questions should be recognized
+    # before the generic calendar-keyword gate.
+    if (
+        "this afternoon" in normalized
+        or re.search(
+            r"\b(?:anything|something|plans?)\b.*\bafternoon\b",
+            normalized,
+        )
+    ):
+        return "afternoon"
+
+    if (
+        "next event" in normalized
+        or "next appointment" in normalized
+        or "next thing" in normalized
+        or "what's next" in normalized
+        or "what is next" in normalized
+    ):
+        return "next"
+
+    tomorrow_patterns = (
+        "tomorrow",
+        "what do i have tomorrow",
+        "what have i got tomorrow",
+        "anything tomorrow",
+        "what am i doing tomorrow",
+    )
+
+    if any(
+        phrase in normalized
+        for phrase in tomorrow_patterns
+    ):
+        return "tomorrow"
+
+    today_patterns = (
+        "today",
+        "anything on today",
+        "anything today",
+        "what do i have today",
+        "what have i got today",
+        "what am i doing today",
+    )
+
+    if any(
+        phrase in normalized
+        for phrase in today_patterns
+    ):
+        return "today"
+
+    calendar_words = (
+        "calendar",
+        "schedule",
+        "event",
+        "events",
+        "appointment",
+        "appointments",
+        "what do i have",
+        "what have i got",
+        "anything on",
+    )
+
+    if any(
+        phrase in normalized
+        for phrase in calendar_words
+    ):
+        return "today"
+
+    return None
+
+
+def handle_calendar_request(calendar_intent):
+    if calendar_intent == "next":
+        return format_calendar_next_event()
+
+    if calendar_intent == "tomorrow":
+        return format_calendar_tomorrow()
+
+    if calendar_intent == "afternoon":
+        return format_calendar_afternoon()
+
+    return format_calendar_today()
+
+
+# ---------------------------------------------------------------------------
 # BMO_WEATHER_ROUTER_V1
 # Deterministic local and named-location weather routing
 # ---------------------------------------------------------------------------
@@ -2464,6 +2576,100 @@ def chat(request: ChatRequest, background_tasks: BackgroundTasks):
             "action": {
                 "type": "capture_image",
                 "prompt": user_text,
+            },
+        }
+
+    # ------------------------------------------------------------------
+    # BMO_CALENDAR_ROUTER_V1
+    # Deterministic read-only calendar routing
+    # ------------------------------------------------------------------
+    calendar_intent = get_calendar_intent(
+        user_text
+    )
+
+    if calendar_intent:
+        logger.info(
+            "Deterministic calendar request: %r -> %s",
+            user_text,
+            calendar_intent,
+        )
+
+        try:
+            response_text = (
+                handle_calendar_request(
+                    calendar_intent
+                )
+            )
+
+        except CalendarNotAuthorized:
+            logger.warning(
+                "Google Calendar is not authorized"
+            )
+
+            response_text = (
+                "My calendar isn't connected yet."
+            )
+
+        except CalendarError:
+            logger.exception(
+                "Calendar provider failed"
+            )
+
+            response_text = (
+                "I can't check your calendar right now."
+            )
+
+        except Exception:
+            logger.exception(
+                "Unexpected calendar request failure"
+            )
+
+            response_text = (
+                "I can't check your calendar right now."
+            )
+
+        response_history = append_memory_turn(
+            persistent_history,
+            user_text,
+            response_text,
+        )
+
+        audio_url = None
+
+        tts_content = (
+            clean_text_for_speech(
+                response_text
+            )
+            or response_text
+        )
+
+        background_tasks.add_task(
+            _cleanup_old_audio
+        )
+
+        if play_on_hardware:
+            background_tasks.add_task(
+                play_audio_on_hardware,
+                tts_content,
+            )
+
+        else:
+            filename = (
+                f"response_{uuid.uuid4().hex[:8]}.wav"
+            )
+
+            audio_url = generate_audio_file(
+                tts_content,
+                filename,
+            )
+
+        return {
+            "response": response_text,
+            "history": response_history,
+            "audio_url": audio_url,
+            "action": {
+                "type": "calendar",
+                "intent": calendar_intent,
             },
         }
 

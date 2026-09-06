@@ -63,3 +63,6 @@ local.properties
 build/
 */build/
 .env.spotify
+credentials.google-calendar.json
+token.google-calendar.json
+calendar_selection.json
