@@ -20,12 +20,11 @@ from core.homelab_health import (
 
 
 NODE_ALIASES = {
+    "media server": "media",
     "primary": "primary",
-    "home server": "primary",
-    "primary": "primary",
+    "primary server": "primary",
     "media": "media",
     "local": "local",
-    "side quest": "local",
     "mac": "local",
     "macbook": "local",
 }

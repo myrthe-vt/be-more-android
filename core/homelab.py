@@ -15,17 +15,17 @@ load_dotenv()
 
 SSH_TIMEOUT_SECONDS = 5
 
-HOMESERVER_SSH_HOST = (
+PRIMARY_SSH_HOST = (
     os.environ.get(
-        "BMO_HOMELAB_HOMESERVER_HOST",
+        "BMO_HOMELAB_PRIMARY_HOST",
         "",
     ).strip()
     or None
 )
 
-SPECTRE_SSH_HOST = (
+MEDIA_SSH_HOST = (
     os.environ.get(
-        "BMO_HOMELAB_SPECTRE_HOST",
+        "BMO_HOMELAB_MEDIA_HOST",
         "",
     ).strip()
     or None
@@ -44,17 +44,12 @@ NODES = {
     "primary": Node(
         key="primary",
         name="primary",
-        ssh_host=HOMESERVER_SSH_HOST,
-    ),
-    "primary": Node(
-        key="primary",
-        name="primary",
-        ssh_host=HOMESERVER_SSH_HOST,
+        ssh_host=PRIMARY_SSH_HOST,
     ),
     "media": Node(
         key="media",
         name="Media",
-        ssh_host=SPECTRE_SSH_HOST,
+        ssh_host=MEDIA_SSH_HOST,
     ),
     "local": Node(
         key="local",
