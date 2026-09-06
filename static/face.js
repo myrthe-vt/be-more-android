@@ -12019,3 +12019,280 @@ if (
     );
 }
 
+
+
+
+// BMO_NATIVE_VISION_PREVIEW_V1
+//
+// Android sends a small in-memory JPEG immediately after the front
+// camera captures a frame.
+//
+// This layer is presentation-only:
+// - the preview is never written to disk
+// - the original full-resolution JPEG still goes to /api/vision
+// - existing vision response/error handlers remain authoritative
+// - a safety timeout prevents a stuck photo if something goes wrong
+
+(() => {
+    let previewOverlay = null;
+    let previewTimeout = null;
+
+    function hideNativeVisionPreview() {
+        if (previewTimeout !== null) {
+            clearTimeout(
+                previewTimeout
+            );
+
+            previewTimeout = null;
+        }
+
+        if (previewOverlay !== null) {
+            previewOverlay.remove();
+
+            previewOverlay = null;
+        }
+    }
+
+    function showNativeVisionPreview(
+        dataUrl
+    ) {
+        hideNativeVisionPreview();
+
+        if (
+            typeof dataUrl !== "string" ||
+            !dataUrl.startsWith(
+                "data:image/"
+            )
+        ) {
+            console.warn(
+                "BMO vision preview received invalid image data"
+            );
+
+            return;
+        }
+
+        const overlay =
+            document.createElement(
+                "div"
+            );
+
+        overlay.id =
+            "bmo-native-vision-preview";
+
+        Object.assign(
+            overlay.style,
+            {
+                position: "fixed",
+                inset: "0",
+                zIndex: "9998",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                padding: "20px",
+                boxSizing: "border-box",
+                background:
+                    "rgba(20, 63, 54, 0.92)",
+                pointerEvents: "none",
+                opacity: "0",
+                transition:
+                    "opacity 140ms ease-out"
+            }
+        );
+
+        const card =
+            document.createElement(
+                "div"
+            );
+
+        Object.assign(
+            card.style,
+            {
+                position: "relative",
+                maxWidth: "92vw",
+                maxHeight: "88vh",
+                padding: "10px",
+                borderRadius: "20px",
+                background: "#bdf5cb",
+                boxShadow:
+                    "0 10px 34px rgba(0, 0, 0, 0.38)",
+                overflow: "hidden"
+            }
+        );
+
+        const image =
+            document.createElement(
+                "img"
+            );
+
+        image.src =
+            dataUrl;
+
+        image.alt =
+            "What BMO sees";
+
+        Object.assign(
+            image.style,
+            {
+                display: "block",
+                maxWidth: "88vw",
+                maxHeight: "80vh",
+                width: "auto",
+                height: "auto",
+                objectFit: "contain",
+                borderRadius: "12px"
+            }
+        );
+
+        const label =
+            document.createElement(
+                "div"
+            );
+
+        label.textContent =
+            "BMO VISION";
+
+        Object.assign(
+            label.style,
+            {
+                position: "absolute",
+                left: "18px",
+                bottom: "18px",
+                padding: "5px 9px",
+                borderRadius: "8px",
+                background:
+                    "rgba(189, 245, 203, 0.88)",
+                color: "#174c3d",
+                fontFamily:
+                    "monospace",
+                fontSize: "12px",
+                fontWeight: "bold",
+                letterSpacing: "1px"
+            }
+        );
+
+        card.appendChild(
+            image
+        );
+
+        card.appendChild(
+            label
+        );
+
+        overlay.appendChild(
+            card
+        );
+
+        document.body.appendChild(
+            overlay
+        );
+
+        previewOverlay =
+            overlay;
+
+        requestAnimationFrame(
+            () => {
+                if (
+                    previewOverlay ===
+                    overlay
+                ) {
+                    overlay.style.opacity =
+                        "1";
+                }
+            }
+        );
+
+        /*
+         * This should normally be removed by the vision response/error
+         * callbacks below. This is only a fail-safe.
+         */
+        previewTimeout =
+            setTimeout(
+                hideNativeVisionPreview,
+                30000
+            );
+
+        console.log(
+            "BMO front-camera preview displayed"
+        );
+    }
+
+    /*
+     * Android calls this immediately after Camera.takePicture().
+     */
+    window.onNativeVisionCaptured =
+        function (
+            dataUrl
+        ) {
+            try {
+                showNativeVisionPreview(
+                    dataUrl
+                );
+            } catch (
+                error
+            ) {
+                console.error(
+                    "Could not display BMO vision preview:",
+                    error
+                );
+
+                hideNativeVisionPreview();
+            }
+        };
+
+    /*
+     * Preserve the existing response handler exactly as-is.
+     * We simply hide the captured photo before handing control back.
+     */
+    const existingVisionResponse =
+        window.onNativeVisionResponse;
+
+    if (
+        typeof existingVisionResponse ===
+        "function"
+    ) {
+        window.onNativeVisionResponse =
+            async function (
+                ...args
+            ) {
+                hideNativeVisionPreview();
+
+                return await existingVisionResponse.apply(
+                    this,
+                    args
+                );
+            };
+    }
+
+    /*
+     * Same treatment for camera/backend failures.
+     */
+    const existingVisionError =
+        window.onNativeVisionError;
+
+    if (
+        typeof existingVisionError ===
+        "function"
+    ) {
+        window.onNativeVisionError =
+            function (
+                ...args
+            ) {
+                hideNativeVisionPreview();
+
+                return existingVisionError.apply(
+                    this,
+                    args
+                );
+            };
+    }
+
+    /*
+     * Expose this only for internal cleanup/debugging.
+     */
+    window.hideNativeVisionPreview =
+        hideNativeVisionPreview;
+
+    console.log(
+        "BMO native vision preview layer ready"
+    );
+})();
