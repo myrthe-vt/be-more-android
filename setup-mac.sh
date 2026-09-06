@@ -141,6 +141,21 @@ python -m pip install -r requirements.txt
 say_ok "Python dependencies installed"
 
 # ------------------------------------------------------------
+# OpenWakeWord feature models
+# ------------------------------------------------------------
+
+say_step "Setting up OpenWakeWord feature models"
+
+python <<'PYOPENWAKEWORD'
+import openwakeword
+from openwakeword.utils import download_models
+
+download_models()
+PYOPENWAKEWORD
+
+say_ok "OpenWakeWord feature models ready"
+
+# ------------------------------------------------------------
 # Piper
 # ------------------------------------------------------------
 
