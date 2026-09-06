@@ -2856,6 +2856,15 @@ showingBmoPage =
                 override fun onFailure(
                     throwable: Throwable
                 ) {
+                    /*
+                     * Only surface Spotify unavailability when this
+                     * connection attempt followed an explicit Spotify
+                     * request. Background reconnect failures stay silent.
+                     */
+                    val hadPendingSpotifyRequest =
+                        pendingSpotifyPlayUri != null ||
+                            pendingSpotifyCommand != null
+
                     spotifyConnectInProgress =
                         false
 
@@ -2879,7 +2888,16 @@ showingBmoPage =
                         throwable
                     )
 
-                    notifyJavascriptSpotifyUnavailable()
+                    if (
+                        hadPendingSpotifyRequest
+                    ) {
+                        notifyJavascriptSpotifyUnavailable()
+                    } else {
+                        Log.i(
+                            SPOTIFY_LOG,
+                            "Background Spotify reconnect failed silently"
+                        )
+                    }
                 }
             }
         )
