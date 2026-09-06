@@ -18,6 +18,12 @@ import queue
 import base64
 import re
 
+from core.logging_setup import configure_logging
+
+# Configure BMO logging before importing the runtime modules so their
+# log messages are also captured in the rotating file.
+configure_logging()
+
 # Import our new unified core modules
 from core.llm import Brain, strip_prompt_leakage, extract_json_object, sanitize_messages
 from core.tts import play_audio_on_hardware, generate_audio_file, add_pronunciation, load_pronunciations, clean_text_for_speech, remove_pronunciation
@@ -45,8 +51,8 @@ from core.calendar import (
     format_afternoon as format_calendar_afternoon,
 )
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
+from core.diagnostics import get_diagnostics
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -338,7 +344,10 @@ def _schedule_server_timer(minutes: float, message: str) -> str:
 try:
     from openwakeword.model import Model
     # Initialize the model once for the web app
-    oww_model = Model(wakeword_model_paths=[WAKE_WORD_MODEL])
+    oww_model = Model(
+        wakeword_models=[WAKE_WORD_MODEL],
+        inference_framework="onnx",
+    )
     logger.info(f"Loaded OpenWakeWord model: {WAKE_WORD_MODEL}")
 except Exception as e:
     logger.warning(f"Could not load OpenWakeWord for web app: {e}")
@@ -661,6 +670,8 @@ EXPRESSION_ALIASES = {
     "smile": "happy",
     "smiling": "happy",
     "excited": "happy",
+    "cheerful": "happy",
+    "cheery": "happy",
     "joy": "happy",
     "joyful": "happy",
     "concerned": "sad",
@@ -3273,25 +3284,59 @@ def chat(request: ChatRequest, background_tasks: BackgroundTasks):
         else:
             response_history = brain.get_history()
 
-            if lead_in_text:
-                # Existing behaviour for tools not migrated yet:
-                # speak the lead-in but leave the action JSON in the response
-                # so older clients can still dispatch it.
-                spoken_text = lead_in_text
+            # BMO_REJECT_HALLUCINATED_ACTION_SILENTLY_V1
+            #
+            # A false action sometimes arrives wrapped in confident filler
+            # such as "On it!". Never speak that text unless the action is
+            # something we deliberately still dispatch on the client.
+            legacy_client_actions = {
+                "display_image",
+                "play_music",
+            }
 
-                logger.info(
-                    "Unmigrated action+lead-in: TTS=%r action=%s",
-                    spoken_text[:40],
-                    action_data.get("action"),
-                )
+            action_name = str(
+                action_result.get("action")
+                or action_data.get("action")
+                or ""
+            ).lower().strip()
+
+            if action_name in legacy_client_actions:
+                if lead_in_text:
+                    spoken_text = lead_in_text
+
+                    logger.info(
+                        "Validated legacy client action+lead-in: "
+                        "TTS=%r action=%s",
+                        spoken_text[:40],
+                        action_name,
+                    )
+                else:
+                    is_action = True
+
+                    logger.info(
+                        "Validated legacy client action: %s; "
+                        "skipping TTS",
+                        action_name,
+                    )
+
             else:
-                # Pure JSON response for an unmigrated action.
+                logger.warning(
+                    "Rejected unsupported LLM action silently: %s",
+                    action_name or "<missing>",
+                )
+
+                # Do not display or speak confident filler from a rejected
+                # action. The raw JSON should not enter conversation memory.
+                content = ""
+                spoken_text = ""
                 is_action = True
 
-                logger.info(
-                    "Unmigrated action response detected: %s; skipping TTS",
-                    action_data.get("action"),
-                )
+                if (
+                    response_history and
+                    isinstance(response_history[-1], dict) and
+                    response_history[-1].get("role") == "assistant"
+                ):
+                    response_history.pop()
     else:
         response_history = brain.get_history()
 
@@ -3856,13 +3901,171 @@ async def websocket_wakeword(websocket: WebSocket):
                     break # Only trigger once per chunk
 
     except WebSocketDisconnect:
-        logger.info("WebSocket disconnected")
+        logger.debug("WebSocket disconnected")
     except Exception as e:
         logger.error(f"WebSocket error: {e}")
         try:
             await websocket.close()
         except Exception:
             pass
+
+
+# ---------------------------------------------------------------------------
+# Browser / Android client error reporting
+# ---------------------------------------------------------------------------
+#
+# These reports are intentionally tiny and read-only from BMO's point of
+# view. They give the Mac log and developer panel visibility into failures
+# that would otherwise live only inside WebView / Logcat.
+#
+# Android forwarding is added separately. Supporting the "android" source
+# here now means it can plug into the same path later without another API.
+
+class ClientErrorReport(BaseModel):
+    source: str = "frontend"
+    message: str
+    detail: str | None = None
+    url: str | None = None
+    line: int | None = None
+    column: int | None = None
+
+
+_client_error_lock = threading.Lock()
+
+_last_client_errors = {
+    "frontend": None,
+    "android": None,
+}
+
+
+def _clean_client_error_text(
+    value,
+    limit,
+):
+    if value is None:
+        return None
+
+    text = str(value).strip()
+
+    if not text:
+        return None
+
+    return text[:limit]
+
+
+def _client_error_snapshot():
+    with _client_error_lock:
+        return {
+            key: (
+                dict(value)
+                if isinstance(value, dict)
+                else None
+            )
+            for key, value
+            in _last_client_errors.items()
+        }
+
+
+@app.post("/api/client-error")
+def report_client_error(
+    report: ClientErrorReport
+):
+    source = (
+        report.source or "frontend"
+    ).strip().lower()
+
+    if source not in {
+        "frontend",
+        "android",
+    }:
+        source = "frontend"
+
+    message = (
+        _clean_client_error_text(
+            report.message,
+            1000,
+        )
+        or "Unknown client error"
+    )
+
+    detail = _clean_client_error_text(
+        report.detail,
+        4000,
+    )
+
+    url = _clean_client_error_text(
+        report.url,
+        1000,
+    )
+
+    item = {
+        "timestamp":
+            datetime.datetime.now(
+                datetime.timezone.utc
+            ).isoformat(),
+        "source": source,
+        "message": message,
+        "detail": detail,
+        "url": url,
+        "line": report.line,
+        "column": report.column,
+    }
+
+    with _client_error_lock:
+        _last_client_errors[source] = item
+
+    location = ""
+
+    if url:
+        location = f" at {url}"
+
+        if report.line is not None:
+            location += (
+                f":{report.line}"
+            )
+
+            if report.column is not None:
+                location += (
+                    f":{report.column}"
+                )
+
+    if detail:
+        logger.error(
+            "Client %s error: %s%s | %s",
+            source,
+            message,
+            location,
+            detail,
+        )
+    else:
+        logger.error(
+            "Client %s error: %s%s",
+            source,
+            message,
+            location,
+        )
+
+    return {
+        "status": "logged"
+    }
+
+
+@app.get("/api/diagnostics")
+def diagnostics_status():
+    """
+    Return a read-only BMO diagnostics snapshot.
+
+    This is deliberately separate from /api/status so the existing
+    fast frontend heartbeat keeps its current semantics.
+    """
+    data = get_diagnostics()
+
+    data["clients"] = (
+        _client_error_snapshot()
+    )
+
+    return data
+
 
 @app.get("/api/status")
 async def get_status():

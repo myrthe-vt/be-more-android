@@ -66,3 +66,6 @@ build/
 credentials.google-calendar.json
 token.google-calendar.json
 calendar_selection.json
+
+# Runtime logs
+logs/

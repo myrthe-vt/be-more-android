@@ -1,3 +1,213 @@
+
+
+/*
+ * =====================================================================
+ * BMO CLIENT ERROR REPORTING
+ * =====================================================================
+ *
+ * Keep this deliberately small:
+ * - uncaught JavaScript errors
+ * - unhandled Promise rejections
+ *
+ * Existing targeted console.error() calls remain untouched.
+ */
+
+function bmoErrorText(
+    value
+) {
+    if (
+        value === null ||
+        value === undefined
+    ) {
+        return "";
+    }
+
+    if (
+        value instanceof Error
+    ) {
+        return (
+            value.stack ||
+            value.message ||
+            String(value)
+        );
+    }
+
+    if (
+        typeof value ===
+        "string"
+    ) {
+        return value;
+    }
+
+    try {
+        return JSON.stringify(
+            value
+        );
+    } catch (
+        error
+    ) {
+        return String(
+            value
+        );
+    }
+}
+
+
+function reportBmoClientError(
+    message,
+    detail = "",
+    location = {}
+) {
+    const payload = {
+        source:
+            "frontend",
+
+        message:
+            String(
+                message ||
+                "Unknown frontend error"
+            ).slice(
+                0,
+                1000
+            ),
+
+        detail:
+            String(
+                detail || ""
+            ).slice(
+                0,
+                4000
+            ),
+
+        url:
+            location.url ||
+            window.location.href,
+
+        line:
+            Number.isFinite(
+                location.line
+            )
+                ? location.line
+                : null,
+
+        column:
+            Number.isFinite(
+                location.column
+            )
+                ? location.column
+                : null,
+    };
+
+    /*
+     * Never allow diagnostics reporting itself to create a new
+     * unhandled rejection.
+     */
+    fetch(
+        "/api/client-error",
+        {
+            method:
+                "POST",
+
+            headers: {
+                "Content-Type":
+                    "application/json",
+            },
+
+            body:
+                JSON.stringify(
+                    payload
+                ),
+
+            cache:
+                "no-store",
+        }
+    ).catch(
+        () => {
+            // Backend may itself be offline.
+        }
+    );
+}
+
+
+window.addEventListener(
+    "error",
+    (
+        event
+    ) => {
+        const errorDetail =
+            bmoErrorText(
+                event.error
+            );
+
+        reportBmoClientError(
+            event.message ||
+                "Uncaught JavaScript error",
+
+            errorDetail,
+
+            {
+                url:
+                    event.filename ||
+                    window.location.href,
+
+                line:
+                    Number(
+                        event.lineno
+                    ),
+
+                column:
+                    Number(
+                        event.colno
+                    ),
+            }
+        );
+    }
+);
+
+
+window.addEventListener(
+    "unhandledrejection",
+    (
+        event
+    ) => {
+        const detail =
+            bmoErrorText(
+                event.reason
+            );
+
+        let message =
+            "Unhandled Promise rejection";
+
+        if (
+            event.reason instanceof
+            Error &&
+            event.reason.message
+        ) {
+            message =
+                event.reason.message;
+
+        } else if (
+            typeof event.reason ===
+            "string" &&
+            event.reason
+        ) {
+            message =
+                event.reason;
+        }
+
+        reportBmoClientError(
+            message,
+            detail,
+            {
+                url:
+                    window.location.href,
+            }
+        );
+    }
+);
+
+
+
 const screen = document.getElementById("bmo-screen");
 const faceCanvas = document.getElementById("bmo-face-canvas");
 const statusMessage = document.getElementById("status-message");
@@ -5832,6 +6042,15 @@ function createBmoDebugPanel() {
 
                 <div class="bmo-debug-label">BMO audio</div>
                 <div class="bmo-debug-value" id="bmo-debug-audio">...</div>
+
+                <div class="bmo-debug-label">Mac diagnostics</div>
+                <div class="bmo-debug-value" id="bmo-debug-mac-diagnostics">...</div>
+
+                <div class="bmo-debug-label">Last frontend error</div>
+                <div class="bmo-debug-value" id="bmo-debug-frontend-error">...</div>
+
+                <div class="bmo-debug-label">Last Android error</div>
+                <div class="bmo-debug-value" id="bmo-debug-android-error">...</div>
             </div>
 
             <div class="bmo-debug-section-title">
@@ -6235,6 +6454,170 @@ function createBmoDebugPanel() {
 }
 
 
+function formatBmoClientErrorForDebug(
+    item
+) {
+    if (
+        !item ||
+        !item.message
+    ) {
+        return "none";
+    }
+
+    const message =
+        String(
+            item.message
+        );
+
+    if (
+        message.length <=
+        90
+    ) {
+        return message;
+    }
+
+    return (
+        message.slice(
+            0,
+            87
+        ) +
+        "..."
+    );
+}
+
+
+async function refreshBmoClientDiagnostics() {
+    const setValue =
+        (
+            id,
+            value
+        ) => {
+            const element =
+                document.getElementById(
+                    id
+                );
+
+            if (
+                element
+            ) {
+                element.textContent =
+                    String(
+                        value
+                    );
+            }
+        };
+
+    try {
+        const controller =
+            new AbortController();
+
+        const timeoutId =
+            setTimeout(
+                () => {
+                    controller.abort();
+                },
+                2500
+            );
+
+        const response =
+            await fetch(
+                "/api/diagnostics",
+                {
+                    method:
+                        "GET",
+
+                    cache:
+                        "no-store",
+
+                    signal:
+                        controller.signal,
+                }
+            );
+
+        clearTimeout(
+            timeoutId
+        );
+
+        if (
+            !response.ok
+        ) {
+            throw new Error(
+                `Diagnostics HTTP ${response.status}`
+            );
+        }
+
+        const data =
+            await response.json();
+
+        const diskDetail =
+            data &&
+            data.core &&
+            data.core.disk
+                ? data.core.disk.detail
+                : "";
+
+        const overall =
+            data &&
+            data.status
+                ? data.status
+                : "unknown";
+
+        setValue(
+            "bmo-debug-mac-diagnostics",
+            diskDetail
+                ? `${overall} · ${diskDetail}`
+                : overall
+        );
+
+        const clients =
+            (
+                data &&
+                data.clients
+            ) ||
+            {};
+
+        setValue(
+            "bmo-debug-frontend-error",
+            formatBmoClientErrorForDebug(
+                clients.frontend
+            )
+        );
+
+        setValue(
+            "bmo-debug-android-error",
+            formatBmoClientErrorForDebug(
+                clients.android
+            )
+        );
+
+    } catch (
+        error
+    ) {
+        /*
+         * Diagnostics must never interfere with the normal debug panel.
+         * In particular, do not report this failure through
+         * /api/client-error, because a backend outage would otherwise
+         * create pointless recursive diagnostics noise.
+         */
+        setValue(
+            "bmo-debug-mac-diagnostics",
+            "unavailable"
+        );
+
+        setValue(
+            "bmo-debug-frontend-error",
+            "unavailable"
+        );
+
+        setValue(
+            "bmo-debug-android-error",
+            "unavailable"
+        );
+    }
+}
+
+
+
 function refreshBmoDebugStatus() {
     const setValue =
         (
@@ -6385,6 +6768,8 @@ function refreshBmoDebugStatus() {
                 : "browser offline"
         );
     }
+
+    refreshBmoClientDiagnostics();
 }
 
 
@@ -10553,6 +10938,11 @@ function readBMONativeSpotifyState() {
                     parsed.connected
                 ),
 
+            localAudioActive:
+                Boolean(
+                    parsed.local_audio_active
+                ),
+
             playing:
                 Boolean(
                     parsed.playing
@@ -11802,8 +12192,16 @@ function applyBMOSpotifyMusicMode(
         return;
     }
 
+    // BMO_SPOTIFY_LOCAL_JAMMING_V1
+    //
+    // Spotify App Remote can report the account-wide Spotify Connect
+    // session even when another device is actually producing the audio.
+    //
+    // BMO should only visually jam when Spotify says it is playing AND
+    // Android confirms media audio is active on this LG.
     if (
-        state.playing
+        state.playing &&
+        state.localAudioActive
     ) {
         if (
             canBMOSpotifyUseJammingFace() &&

@@ -822,10 +822,10 @@ class Brain:
         ]
         if any(kw in lower_text for kw in camera_keywords):
             action = '{"action": "take_photo"}'
-            lead_in = _quick_lead_in(user_text, "photo")
-            combined = (lead_in + " " + action).strip() if lead_in else action
-            self.history.append({"role": "assistant", "content": combined})
-            return combined
+            # BMO_ACTION_ACK_AFTER_VALIDATION_V1
+            # Do not speak before the client has accepted the action.
+            self.history.append({"role": "assistant", "content": action})
+            return action
 
         # Pre-LLM display_image check — handle image generation requests
         # directly instead of relying on the small model to emit correct JSON
@@ -834,10 +834,8 @@ class Brain:
             matched_kw = next(kw for kw in _DISPLAY_IMAGE_KEYWORDS if kw in lower_text)
             print(f"[LLM] Image keyword MATCHED: '{matched_kw}' in '{lower_text[:60]}'")
             print(f"[LLM] Emitting display_image action: {action[:80]}")
-            lead_in = _quick_lead_in(user_text, "image")
-            combined = (lead_in + " " + action).strip() if lead_in else action
-            self.history.append({"role": "assistant", "content": combined})
-            return combined
+            self.history.append({"role": "assistant", "content": action})
+            return action
 
         # Pre-LLM music check — emit play_music directly rather than
         # relying on the small model to emit correct JSON
@@ -846,10 +844,8 @@ class Brain:
             matched_kw = next(kw for kw in _MUSIC_KEYWORDS if kw in lower_text)
             print(f"[LLM] Music keyword MATCHED: '{matched_kw}' in '{lower_text[:60]}'")
             print(f"[LLM] Emitting play_music action")
-            lead_in = _quick_lead_in(user_text, "music")
-            combined = (lead_in + " " + action).strip() if lead_in else action
-            self.history.append({"role": "assistant", "content": combined})
-            return combined
+            self.history.append({"role": "assistant", "content": action})
+            return action
 
         # Pre-LLM timer check — parsed in Python, never left to the model
         # (see core/timers.py).  Mirrors stream_think.
@@ -1029,10 +1025,7 @@ class Brain:
         ]
         if any(kw in lower_text for kw in camera_keywords):
             action = '{"action": "take_photo"}'
-            lead_in = _quick_lead_in(user_text, "photo")
-            if lead_in:
-                yield lead_in
-            self.history.append({"role": "assistant", "content": (lead_in + " " + action).strip()})
+            self.history.append({"role": "assistant", "content": action})
             yield action
             return
 
@@ -1041,10 +1034,7 @@ class Brain:
             action = _build_display_image_action(user_text)
             matched_kw = next(kw for kw in _DISPLAY_IMAGE_KEYWORDS if kw in lower_text)
             print(f"[LLM-STREAM] Image keyword MATCHED: '{matched_kw}' in '{lower_text[:60]}'")
-            lead_in = _quick_lead_in(user_text, "image")
-            if lead_in:
-                yield lead_in
-            self.history.append({"role": "assistant", "content": (lead_in + " " + action).strip()})
+            self.history.append({"role": "assistant", "content": action})
             yield action
             return
 
@@ -1053,10 +1043,7 @@ class Brain:
             action = '{"action": "play_music"}'
             matched_kw = next(kw for kw in _MUSIC_KEYWORDS if kw in lower_text)
             print(f"[LLM-STREAM] Music keyword MATCHED: '{matched_kw}' in '{lower_text[:60]}'")
-            lead_in = _quick_lead_in(user_text, "music")
-            if lead_in:
-                yield lead_in
-            self.history.append({"role": "assistant", "content": (lead_in + " " + action).strip()})
+            self.history.append({"role": "assistant", "content": action})
             yield action
             return
 
