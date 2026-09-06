@@ -34,6 +34,9 @@ chat_memory.json
 *.mp3
 *.jpg
 *.png
+
+# Keep the Android BMO launcher icon
+!android/app/src/main/res/drawable-nodpi/bmo_launcher_icon.png
 camera_capture.jpg
 current_image.jpg
 test_audio.wav
