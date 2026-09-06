@@ -4795,44 +4795,11 @@ window.onNativeRecordingStopped =
         );
 
         /*
-         * Recording is finished now, so it is safe for BMO to
-         * make a little acknowledgement without feeding itself
-         * into the microphone.
+         * Recording is finished. Do not play a spoken acknowledgement here:
+         * a hallucinated or rejected command should remain completely silent.
+         * Thinking sounds may still play later if BMO is genuinely waiting.
          */
-        playBmoPersonalitySound(
-            "ack_sounds",
-            BMO_SOUND_CONFIG
-                .acknowledgementVolume,
-            () => {
-                clearTimeout(
-                    bmoThinkingSoundTimer
-                );
-
-                bmoThinkingSoundTimer =
-                    setTimeout(
-                        () => {
-                            /*
-                             * Only make a thinking noise if we're
-                             * genuinely still waiting for the answer.
-                             */
-                            if (
-                                !isRecording &&
-                                !currentAudio &&
-                                bmoRenderer.state ===
-                                    "thinking"
-                            ) {
-                                playBmoPersonalitySound(
-                                    "thinking_sounds",
-                                    BMO_SOUND_CONFIG
-                                        .thinkingVolume
-                                );
-                            }
-                        },
-                        BMO_SOUND_CONFIG
-                            .thinkingDelayMs
-                    );
-            }
-        );
+        scheduleBmoThinkingSound();
 
         if (
             "vibrate" in
@@ -5757,18 +5724,11 @@ function handleBmoPersonalityState(
         case "thinking":
 
             /*
-             * We deliberately acknowledge AFTER recording has
-             * finished so BMO's own speaker does not feed into
-             * the microphone.
+             * Stay silent when entering thinking state. This prevents
+             * hallucinated or rejected commands from producing stray
+             * "Okay!" / "On it!" acknowledgement audio.
              */
-            playBmoPersonalitySound(
-                "ack_sounds",
-                BMO_SOUND_CONFIG
-                    .acknowledgementVolume,
-                () => {
-                    scheduleBmoThinkingSound();
-                }
-            );
+            scheduleBmoThinkingSound();
 
             break;
 
