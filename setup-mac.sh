@@ -1,158 +1,342 @@
 #!/bin/bash
+set -euo pipefail
 
-set -e
-
-# ==========================================================
-# Be More Agent - macOS Setup Script
-# Optimized for Apple Silicon (M1/M2/M3)
-# ==========================================================
+BASE_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$BASE_DIR"
 
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 RED='\033[0;31m'
 NC='\033[0m'
 
-echo -e "${GREEN}🤖 Be More Agent macOS Setup${NC}"
+say_step() {
+    echo
+    echo -e "${YELLOW}==> $1${NC}"
+}
 
-# ----------------------------------------------------------
-# 1. Check Homebrew
-# ----------------------------------------------------------
+say_ok() {
+    echo -e "${GREEN}✓ $1${NC}"
+}
 
-echo -e "${YELLOW}[1/7] Checking Homebrew...${NC}"
+say_warn() {
+    echo -e "${YELLOW}! $1${NC}"
+}
 
-if ! command -v brew >/dev/null 2>&1; then
-    echo -e "${RED}❌ Homebrew not found.${NC}"
-    echo "Install from:"
-    echo "https://brew.sh"
+say_error() {
+    echo -e "${RED}✗ $1${NC}"
+}
+
+echo -e "${GREEN}"
+echo "╔══════════════════════════════════════╗"
+echo "║          BMO macOS setup            ║"
+echo "╚══════════════════════════════════════╝"
+echo -e "${NC}"
+
+# ------------------------------------------------------------
+# Platform
+# ------------------------------------------------------------
+
+say_step "Checking macOS"
+
+if [ "$(uname -s)" != "Darwin" ]; then
+    say_error "This setup script is for macOS."
     exit 1
 fi
 
-# ----------------------------------------------------------
-# 2. Install Dependencies
-# ----------------------------------------------------------
+say_ok "Running on macOS ($(uname -m))"
 
-echo -e "${YELLOW}[2/7] Installing macOS dependencies...${NC}"
+# ------------------------------------------------------------
+# Homebrew
+# ------------------------------------------------------------
 
-brew install portaudio cmake git espeak-ng wget
+say_step "Checking Homebrew"
 
-# ----------------------------------------------------------
-# 3. Create Project Folders
-# ----------------------------------------------------------
+if ! command -v brew >/dev/null 2>&1; then
+    say_error "Homebrew is required but was not found."
+    echo
+    echo "Install Homebrew from:"
+    echo "  https://brew.sh"
+    echo
+    echo "Then run ./setup-mac.sh again."
+    exit 1
+fi
 
-echo -e "${YELLOW}[3/7] Creating folders...${NC}"
+say_ok "Homebrew found: $(command -v brew)"
 
-mkdir -p piper
-mkdir -p voices
+# ------------------------------------------------------------
+# Native dependencies
+# ------------------------------------------------------------
 
-mkdir -p sounds/greeting_sounds
-mkdir -p sounds/thinking_sounds
-mkdir -p sounds/ack_sounds
-mkdir -p sounds/error_sounds
+say_step "Installing/checking native dependencies"
 
-mkdir -p faces/idle
-mkdir -p faces/listening
-mkdir -p faces/thinking
-mkdir -p faces/speaking
-mkdir -p faces/error
-mkdir -p faces/warmup
+BREW_PACKAGES=(
+    python@3.13
+    portaudio
+    cmake
+    git
+    ffmpeg
+    wget
+    espeak-ng
+)
 
-# ----------------------------------------------------------
-# 4. Download Voice Models
-# ----------------------------------------------------------
+for package in "${BREW_PACKAGES[@]}"; do
+    if brew list "$package" >/dev/null 2>&1; then
+        say_ok "$package already installed"
+    else
+        echo "Installing $package..."
+        brew install "$package"
+    fi
+done
 
-echo -e "${YELLOW}[4/7] Downloading Piper voices...${NC}"
+# ------------------------------------------------------------
+# Python 3.13
+# ------------------------------------------------------------
 
-mkdir -p piper
+say_step "Checking Python 3.13"
 
-cd piper
+if command -v python3.13 >/dev/null 2>&1; then
+    PYTHON="$(command -v python3.13)"
+else
+    PYTHON="$(brew --prefix python@3.13)/bin/python3.13"
+fi
 
-wget -nc \
--O en_GB-semaine-medium.onnx \
-https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_GB/semaine/medium/en_GB-semaine-medium.onnx
+if [ ! -x "$PYTHON" ]; then
+    say_error "Python 3.13 could not be located."
+    exit 1
+fi
 
-wget -nc \
--O en_GB-semaine-medium.onnx.json \
-https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/en/en_GB/semaine/medium/en_GB-semaine-medium.onnx.json
+say_ok "$("$PYTHON" --version)"
 
-cd ..
+# ------------------------------------------------------------
+# Virtual environment
+# ------------------------------------------------------------
 
-# ----------------------------------------------------------
-# 5. Optional BMO Voice
-# ----------------------------------------------------------
+say_step "Setting up Python virtual environment"
 
-echo -e "${YELLOW}[5/7] Downloading BMO voice...${NC}"
+if [ -d venv ]; then
+    if [ -x venv/bin/python3 ]; then
+        VENV_VERSION="$(venv/bin/python3 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')"
 
-curl -L \
--o voices/bmo-custom.onnx \
-https://github.com/brenpoly/be-more-agent/releases/latest/download/bmo.onnx \
-|| true
+        if [ "$VENV_VERSION" != "3.13" ]; then
+            say_warn "Existing venv uses Python $VENV_VERSION, not 3.13."
+            echo "Remove ./venv manually and rerun setup if you want it rebuilt."
+            exit 1
+        fi
 
-curl -L \
--o voices/bmo-custom.onnx.json \
-https://github.com/brenpoly/be-more-agent/releases/latest/download/bmo.onnx.json \
-|| true
-
-# ----------------------------------------------------------
-# 6. Python Environment
-# ----------------------------------------------------------
-
-echo -e "${YELLOW}[6/7] Setting up Python environment...${NC}"
-
-if [ ! -d "venv" ]; then
-    python3 -m venv venv
+        say_ok "Existing Python 3.13 venv found"
+    else
+        say_error "./venv exists but is not a usable Python environment."
+        exit 1
+    fi
+else
+    "$PYTHON" -m venv venv
+    say_ok "Created Python 3.13 venv"
 fi
 
 source venv/bin/activate
 
-pip install --upgrade pip setuptools wheel
+python -m pip install --upgrade pip setuptools wheel
+python -m pip install -r requirements.txt
 
-pip install --force-reinstall --no-cache-dir sounddevice
+say_ok "Python dependencies installed"
 
-pip install -r requirements.txt
+# ------------------------------------------------------------
+# Piper
+# ------------------------------------------------------------
 
-# ----------------------------------------------------------
-# 7. Ollama Models
-# ----------------------------------------------------------
+say_step "Setting up Piper BMO voice"
 
-echo -e "${YELLOW}[7/7] Checking Ollama...${NC}"
+mkdir -p piper
 
-if command -v ollama >/dev/null 2>&1; then
+if [ ! -x venv/bin/piper ]; then
+    say_error "piper-tts installed but venv/bin/piper was not created."
+    exit 1
+fi
 
-    echo "Pulling language model..."
-    ollama pull qwen2.5:7b
+ln -sfn "$BASE_DIR/venv/bin/piper" piper/piper
 
-    echo "Pulling vision model..."
-    ollama pull moondream
+say_ok "Piper executable linked"
 
+BMO_VOICE_URL="https://github.com/brenpoly/be-more-agent/releases/latest/download/bmo.onnx"
+BMO_VOICE_JSON_URL="https://github.com/brenpoly/be-more-agent/releases/latest/download/bmo.onnx.json"
+
+if [ ! -f piper/bmo.onnx ]; then
+    echo "Downloading BMO voice model..."
+    curl -fL \
+        "$BMO_VOICE_URL" \
+        -o piper/bmo.onnx
 else
-    echo -e "${RED}❌ Ollama not found.${NC}"
-    echo "Install:"
-    echo "https://ollama.com"
+    say_ok "BMO voice model already present"
 fi
 
-# ----------------------------------------------------------
-# Wake Word
-# ----------------------------------------------------------
-
-if [ ! -f "wakeword.onnx" ]; then
-
-    echo -e "${YELLOW}Downloading wake word model...${NC}"
-
-    curl -L \
-    -o wakeword.onnx \
-    https://github.com/dscripka/openWakeWord/raw/main/openwakeword/resources/models/hey_jarvis_v0.1.onnx
-
+if [ ! -f piper/bmo.onnx.json ]; then
+    echo "Downloading BMO voice configuration..."
+    curl -fL \
+        "$BMO_VOICE_JSON_URL" \
+        -o piper/bmo.onnx.json
+else
+    say_ok "BMO voice configuration already present"
 fi
 
-# ----------------------------------------------------------
+# ------------------------------------------------------------
+# whisper.cpp
+# ------------------------------------------------------------
 
-echo ""
-echo -e "${GREEN}✨ Setup complete!${NC}"
-echo ""
+say_step "Setting up whisper.cpp"
 
-echo "Activate environment:"
-echo "source venv/bin/activate"
+if [ ! -d whisper.cpp/.git ]; then
+    echo "Cloning whisper.cpp..."
+    git clone \
+        https://github.com/ggerganov/whisper.cpp.git \
+        whisper.cpp
+else
+    say_ok "whisper.cpp repository already present"
+fi
 
-echo ""
-echo "Run agent:"
-echo "python agent.py"
+if [ ! -x whisper.cpp/build/bin/whisper-cli ]; then
+    echo "Building whisper.cpp..."
+
+    cmake \
+        -S whisper.cpp \
+        -B whisper.cpp/build \
+        -DCMAKE_BUILD_TYPE=Release
+
+    cmake \
+        --build whisper.cpp/build \
+        --config Release \
+        -j "$(sysctl -n hw.logicalcpu)"
+else
+    say_ok "whisper-cli already built"
+fi
+
+if [ ! -f whisper.cpp/models/ggml-base.en.bin ]; then
+    echo "Downloading Whisper base.en model..."
+
+    (
+        cd whisper.cpp
+        bash models/download-ggml-model.sh base.en
+    )
+else
+    say_ok "Whisper base.en model already present"
+fi
+
+# ------------------------------------------------------------
+# Wake word
+# ------------------------------------------------------------
+
+say_step "Checking BMO wake word"
+
+if [ ! -f wakeword.onnx ]; then
+    say_error "wakeword.onnx is missing."
+    echo
+    echo "This project uses its custom BMO wake-word model."
+    echo "The setup script will NOT replace it with a generic model."
+    echo
+    echo "Restore wakeword.onnx from the repository and rerun setup."
+    exit 1
+fi
+
+say_ok "Custom wakeword.onnx found"
+
+# ------------------------------------------------------------
+# Ollama
+# ------------------------------------------------------------
+
+say_step "Checking Ollama"
+
+if ! command -v ollama >/dev/null 2>&1; then
+    say_error "Ollama was not found."
+    echo
+    echo "Install Ollama, start it, then rerun setup:"
+    echo "  https://ollama.com"
+    exit 1
+fi
+
+say_ok "Ollama found: $(command -v ollama)"
+
+if ! ollama list >/dev/null 2>&1; then
+    say_error "Ollama is installed but its service is not reachable."
+    echo
+    echo "Start the Ollama app/service, then rerun setup."
+    exit 1
+fi
+
+for model in \
+    "qwen2.5:7b" \
+    "moondream:latest"
+do
+    if ollama list | awk 'NR > 1 {print $1}' | grep -qx "$model"; then
+        say_ok "$model already installed"
+    else
+        echo "Pulling $model..."
+        ollama pull "$model"
+    fi
+done
+
+# ------------------------------------------------------------
+# Integration configuration
+# ------------------------------------------------------------
+
+say_step "Checking optional integrations"
+
+if [ -f .env.spotify ]; then
+    say_ok "Spotify configuration found"
+else
+    say_warn ".env.spotify not found. Spotify integration will need configuration."
+fi
+
+if [ -f credentials.google-calendar.json ]; then
+    say_ok "Google Calendar credentials found"
+else
+    say_warn "Google Calendar credentials not found."
+fi
+
+if [ -f token.google-calendar.json ]; then
+    say_ok "Google Calendar token found"
+else
+    say_warn "Google Calendar has not been authorized yet."
+fi
+
+# ------------------------------------------------------------
+# Sanity checks
+# ------------------------------------------------------------
+
+say_step "Running BMO sanity checks"
+
+python -m py_compile \
+    core/config.py \
+    core/search.py \
+    core/llm.py \
+    core/stt.py \
+    core/tts.py \
+    core/calendar.py \
+    core/weather.py \
+    core/spotify.py \
+    web_app.py \
+    bmo_diagnostics.py
+
+say_ok "Python syntax checks passed"
+
+python <<'PY'
+import core.config
+import core.search
+import core.llm
+import web_app
+
+print("✓ BMO application imports passed")
+PY
+
+# Diagnostics are informative. Optional integrations may report warnings,
+# so don't make setup fail solely because diagnostics aren't fully green.
+echo
+python bmo_diagnostics.py || true
+
+echo
+echo -e "${GREEN}══════════════════════════════════════${NC}"
+echo -e "${GREEN}BMO setup complete! 🎉${NC}"
+echo -e "${GREEN}══════════════════════════════════════${NC}"
+echo
+echo "Start BMO with:"
+echo
+echo "  ./start-bmo.sh"
+echo

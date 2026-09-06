@@ -1,9 +1,34 @@
+# Core web application
+fastapi
+uvicorn
+pydantic
+python-multipart
+requests
+psutil
+python-dotenv
+
+# Audio / speech
 sounddevice
+soundfile
 numpy
 scipy
 openwakeword
 onnxruntime
+
+# Text to speech
+piper-tts
+
+# Local AI
 ollama
-duckduckgo-search
+
+# Search
+ddgs
+
+# Images / vision
 Pillow
-websocket
+
+# Google Calendar
+google-api-python-client
+google-auth
+google-auth-oauthlib
+google-auth-httplib2

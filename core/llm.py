@@ -314,9 +314,9 @@ _CTRL_RE = re.compile(r'[\x00-\x1f\x7f]')
 
 
 def _sanitize_messages(messages: list) -> list:
-    """Strip control characters from message content before sending to hailo-ollama.
+    """Strip control characters from message content before sending to the LLM backend.
 
-    hailo-ollama's Qwen3 prompt renderer uses a strict JSON parser (nlohmann/json)
+    Some backend prompt renderers use strict JSON parsing
     that rejects control characters (RFC 7159 §7) in string values, even though
     they arrive correctly escaped in the HTTP body.  Newlines were the first
     offender found; ANSI escapes from weather/search snippets are the same class
@@ -335,56 +335,6 @@ def _sanitize_messages(messages: list) -> list:
 sanitize_messages = _sanitize_messages
 
 
-def _quick_lead_in(user_text: str, intent: str) -> str:
-    """Return a one-line BMO acknowledgement before a pre-routed action runs.
-
-    Tries FAST_LLM_MODEL with a *tight* 600 ms ceiling — beyond that the user
-    perceives lag and the static fallback is the better experience.  On Pi 5 +
-    Hailo + qwen2.5-1.5B, a 30-token gen typically lands at 200–500 ms when
-    the model is hot, so this is the right cut-off."""
-    import random as _random
-    fallbacks = {
-        "image": [
-            "Ooh, let BMO draw something for you!",
-            "Time for some BMO art!",
-            "BMO has a picture in mind!",
-            "Let BMO show you something neat!",
-        ],
-        "photo": [
-            "BMO is taking a look!",
-            "Hold still, BMO is looking!",
-            "Let BMO see what you've got!",
-            "Ooh, BMO loves looking at things!",
-        ],
-        "music": [
-            "Time to jam!",
-            "Music time! BMO is so excited!",
-            "Let BMO play you a tune!",
-            "Oh yeah, BMO loves this song!",
-        ],
-    }
-    try:
-        payload = {
-            "model": FAST_LLM_MODEL,
-            "messages": _sanitize_messages([
-                {"role": "system", "content":
-                 "You are BMO. Reply with ONE short, cheerful sentence (max 12 words) "
-                 "acknowledging what the user asked for. No markdown, no quotes."},
-                {"role": "user", "content": user_text},
-            ]),
-            "stream": False,
-            "options": {"temperature": 0.8, "num_predict": 30},
-        }
-        r = requests.post(LLM_URL, json=payload, timeout=0.6)
-        if r.status_code == 200:
-            txt = r.json().get("message", {}).get("content", "").strip().strip('"').strip("'")
-            txt = re.sub(r"\s+", " ", txt)
-            if 3 <= len(txt) <= 100:
-                return txt
-    except Exception:
-        pass
-    options = fallbacks.get(intent, [])
-    return _random.choice(options) if options else ""
 
 
 def extract_json_object(text: str):
@@ -801,7 +751,7 @@ class Brain:
 
     def think(self, user_text: str) -> str:
         """
-        Send text to local LLM (Hailo/Ollama) and get response.
+        Send text to the configured local LLM backend and get a response.
         """
         # System prompt is static; current time/date is injected into the
         # final user message at request-build time (see _with_current_context).
@@ -832,8 +782,8 @@ class Brain:
         if any(kw in lower_text for kw in _DISPLAY_IMAGE_KEYWORDS):
             action = _build_display_image_action(user_text)
             matched_kw = next(kw for kw in _DISPLAY_IMAGE_KEYWORDS if kw in lower_text)
-            print(f"[LLM] Image keyword MATCHED: '{matched_kw}' in '{lower_text[:60]}'")
-            print(f"[LLM] Emitting display_image action: {action[:80]}")
+            logger.debug("Image keyword matched: %r in %r", matched_kw, lower_text[:60])
+            logger.debug("Emitting display_image action: %s", action[:80])
             self.history.append({"role": "assistant", "content": action})
             return action
 
@@ -842,8 +792,8 @@ class Brain:
         if any(kw in lower_text for kw in _MUSIC_KEYWORDS):
             action = '{"action": "play_music"}'
             matched_kw = next(kw for kw in _MUSIC_KEYWORDS if kw in lower_text)
-            print(f"[LLM] Music keyword MATCHED: '{matched_kw}' in '{lower_text[:60]}'")
-            print(f"[LLM] Emitting play_music action")
+            logger.debug("Music keyword matched: %r in %r", matched_kw, lower_text[:60])
+            logger.debug("Emitting play_music action")
             self.history.append({"role": "assistant", "content": action})
             return action
 
@@ -853,12 +803,12 @@ class Brain:
         if timer is not None:
             action = json.dumps({"action": "set_timer", **timer})
             spoken = f"Okay friend! I set a timer for {describe_duration(timer['minutes'])}."
-            print(f"[LLM] Timer MATCHED: {timer}")
+            logger.debug("Timer matched: %s", timer)
             combined = (spoken + " " + action).strip()
             self.history.append({"role": "assistant", "content": combined})
             return combined
 
-        print(f"[LLM] No pre-LLM action matched for: '{lower_text[:60]}'")
+        logger.debug("No pre-LLM action matched for: %r", lower_text[:60])
 
         # Pre-LLM realtime search.
         # Current-information requests are resolved before the normal LLM
@@ -982,7 +932,7 @@ class Brain:
 
         except requests.exceptions.RequestException as e:
             logger.error(f"Connection Error to {LLM_URL}: {e}")
-            return "Could not connect to my brain. Is the Hailo server running?"
+            return "Could not connect to my brain. Is Ollama running?"
         except Exception as e:
             logger.error(f"Brain Exception: {e}")
             return "I'm having trouble thinking right now."
@@ -1033,7 +983,7 @@ class Brain:
         if any(kw in lower_text for kw in _DISPLAY_IMAGE_KEYWORDS):
             action = _build_display_image_action(user_text)
             matched_kw = next(kw for kw in _DISPLAY_IMAGE_KEYWORDS if kw in lower_text)
-            print(f"[LLM-STREAM] Image keyword MATCHED: '{matched_kw}' in '{lower_text[:60]}'")
+            logger.debug("Streaming image keyword matched: %r in %r", matched_kw, lower_text[:60])
             self.history.append({"role": "assistant", "content": action})
             yield action
             return
@@ -1042,7 +992,7 @@ class Brain:
         if any(kw in lower_text for kw in _MUSIC_KEYWORDS):
             action = '{"action": "play_music"}'
             matched_kw = next(kw for kw in _MUSIC_KEYWORDS if kw in lower_text)
-            print(f"[LLM-STREAM] Music keyword MATCHED: '{matched_kw}' in '{lower_text[:60]}'")
+            logger.debug("Streaming music keyword matched: %r in %r", matched_kw, lower_text[:60])
             self.history.append({"role": "assistant", "content": action})
             yield action
             return
@@ -1054,13 +1004,13 @@ class Brain:
         if timer is not None:
             action = json.dumps({"action": "set_timer", **timer})
             spoken = f"Okay friend! I set a timer for {describe_duration(timer['minutes'])}."
-            print(f"[LLM-STREAM] Timer MATCHED: {timer}")
+            logger.debug("Streaming timer matched: %s", timer)
             yield spoken
             self.history.append({"role": "assistant", "content": (spoken + " " + action).strip()})
             yield action
             return
 
-        print(f"[LLM-STREAM] No pre-LLM action matched for: '{lower_text[:60]}'")
+        logger.debug("No streaming pre-LLM action matched for: %r", lower_text[:60])
 
         # Pre-LLM realtime search.
         # Keep streaming and non-streaming routing identical.

@@ -1590,7 +1590,7 @@ async def get_pronunciations():
 
 @app.get("/api/debug")
 async def get_debug_info():
-    """Get system diagnostics and Hailo status."""
+    """Get lightweight system diagnostics and LLM backend status."""
     info = {
         "status": "online",
         "system": {
@@ -1604,7 +1604,7 @@ async def get_debug_info():
         "logs": []
     }
 
-    # Check Hailo/Ollama status
+    # Check configured Ollama-compatible LLM backend status
     try:
         # Extract base URL from LLM_URL (e.g., http://127.0.0.1:8000)
         base_url = LLM_URL.split("/api/")[0]
@@ -2156,13 +2156,13 @@ def handle_weather_request(
 
 
 @app.post("/api/chat")
-# Sync def on purpose: brain.think() blocks for tens of seconds on the NPU.
+# Sync def on purpose: brain.think() may block for a noticeable amount of time.
 # As `async def` it would block uvicorn's event loop, freezing /api/status, the
 # wakeword WebSocket and every other route.  FastAPI runs sync handlers in a
 # threadpool, so slow turns no longer wedge the UI.
 def chat(request: ChatRequest, background_tasks: BackgroundTasks):
     """
-    Send text to local LLM (Hailo/Ollama) and get response.
+    Send text to the configured local LLM backend and get a response.
     """
     user_text = request.message
     play_on_hardware = request.play_on_hardware
@@ -4069,9 +4069,9 @@ def diagnostics_status():
 
 @app.get("/api/status")
 async def get_status():
-    """Check if the Hailo LLM server is reachable."""
+    """Check if the configured LLM backend is reachable."""
     try:
-        # Check the base Ollama URL (e.g., http://127.0.0.1:8000)
+        # Check the configured Ollama-compatible backend base URL
         base_url = LLM_URL.replace("/api/chat", "")
         response = requests.get(base_url, timeout=2)
         if response.status_code == 200:
