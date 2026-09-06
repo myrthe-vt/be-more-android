@@ -16,8 +16,8 @@ The goal is not a generic chatbot wearing a BMO face. It is one coherent little 
 - **Local speech recognition:** `whisper.cpp` with `ggml-base.en`
 - **BMO voice:** Piper TTS with the custom BMO voice model
 - **Wake word:** custom OpenWakeWord model
-- **Android-native interaction:** wake word, command recording, audio state, camera, touch controls
-- **Spotify:** native Android App Remote + Mac Spotify Web API
+- **Android-native interaction:** wake word, command recording, audio state, camera, touch controls, and native/touch volume overlay
+- **Spotify:** native Android App Remote + Mac Spotify Web API, with idle reconnect recovery
 - **Google Calendar**
 - **Weather**
 - **Web search**
@@ -25,7 +25,9 @@ The goal is not a generic chatbot wearing a BMO face. It is one coherent little 
 - **Persistent memory**
 - **Vision:** `moondream:latest`
 - **Idle/daydream personality**
-- **Reactive expressions, critters, now-playing display, and sound personality**
+- **Reactive expressions, critters, now-playing display, charging/unplugging reactions, and sound personality**
+- **Hidden developer/debug screen** with runtime controls and diagnostics
+- **Pronunciation editor** for speech fixes without editing code
 - **Diagnostics & rotating logs**
 - **Tailscale-friendly Mac ↔ Android architecture**
 
@@ -40,7 +42,8 @@ The goal is not a generic chatbot wearing a BMO face. It is one coherent little 
 | Command recording | Android | Native Android audio |
 | Spotify playback control | Android | Spotify App Remote |
 | Camera | Android | Native Android |
-| Audio activity detection | Android | `AudioManager` |
+| Audio activity detection / volume UI | Android | `AudioManager` + native overlay |
+| Developer/debug screen | Android | Hidden native/WebView debug UI |
 | Backend | MacBook Pro | FastAPI / Uvicorn |
 | LLM | MacBook Pro | Ollama, `qwen2.5:7b` |
 | Vision | MacBook Pro | Ollama, `moondream:latest` |
@@ -75,7 +78,7 @@ Requirements:
 Clone the repository:
 
 ```bash
-git clone https://github.com/myrthe-vt/be-more-android.git
+git clone https://github.com/myrthe-vt/be-more-android.git be-more-agent
 cd be-more-agent
 ```
 
@@ -102,7 +105,7 @@ http://0.0.0.0:8000
 
 ### Android
 
-The Android client lives in the companion Android repository.
+The Android client lives in the `android/` directory of this repository.
 
 Current build configuration:
 
@@ -170,8 +173,12 @@ Supported native controls include:
 - resume
 - next
 - previous
+- shuffle
+- repeat
 - now-playing metadata
 - playback progress
+
+Spotify App Remote recovery is handled without a permanent keepalive: BMO reconnects on resume or on demand when a stale connection is detected. A one-shot pending command retry lets the command that discovered the stale connection continue automatically after reconnect.
 
 BMO also checks Android's local audio state so the **jamming** expression only appears when music is actually audible.
 
@@ -302,10 +309,9 @@ The current setup uses HTTP inside the Tailnet. Do not expose the backend direct
 
 ## ⚠️ Known limitations
 
-- **Spotify idle reconnection:** Spotify App Remote can occasionally stop responding after Spotify or the Android device has been idle for a while. Reconnect-on-demand / reconnect-on-resume is the preferred future fix rather than constant keepalive polling.
 - **HTTP transport:** Android currently talks to the Mac over Tailscale HTTP rather than HTTPS.
 - **Hardware-specific fork:** This branch is tested around the Mac + Android architecture above. Some optional compatibility code from earlier hardware targets remains but is not part of the supported Mac install path.
-- **Android release build:** signed release APK work is still part of the v1 release process.
+- **Android release build:** signed release APK work is still part of the initial beta release process.
 
 ---
 
@@ -322,12 +328,15 @@ The current setup uses HTTP inside the Tailnet. Do not expose the backend direct
 | Weather | ✅ |
 | Google Calendar | ✅ |
 | Spotify | ✅ |
+| Spotify idle reconnect / one-shot retry | ✅ |
 | Vision | ✅ |
+| Developer/debug screen | ✅ |
+| Pronunciation editor | ✅ |
 | Diagnostics / logging | ✅ |
 | Mac install/start path | ✅ |
 | README / repo cleanup | ✅ |
 | Signed Android APK | ⏳ |
-| Tagged v1 release | ⏳ |
+| Tagged beta release | ⏳ |
 
 The initial public release should be considered **experimental / beta**.
 
