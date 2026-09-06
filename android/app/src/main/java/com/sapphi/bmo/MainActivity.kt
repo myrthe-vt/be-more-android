@@ -91,6 +91,9 @@ class MainActivity : AppCompatActivity() {
         private const val STATUS_URL =
             "$BMO_BASE_URL/api/status"
 
+        private const val CLIENT_ERROR_URL =
+            "$BMO_BASE_URL/api/client-error"
+
         private const val TRANSCRIBE_URL =
             "$BMO_BASE_URL/api/transcribe"
 
@@ -423,7 +426,118 @@ class MainActivity : AppCompatActivity() {
             WEBVIEW_WATCHDOG_INTERVAL_MS
         )
     }
+    /*
+     * =====================================================================
+     * Diagnostics error forwarding
+     * =====================================================================
+     *
+     * Logcat remains Android's complete native log.
+     *
+     * Only important failures are forwarded to the Mac so the rotating
+     * BMO log and hidden developer panel can show them too.
+     *
+     * Reporting is deliberately fire-and-forget. Diagnostics must never
+     * make the Android app depend on the Mac being reachable.
+     */
 
+    private fun reportAndroidError(
+        message: String,
+        detail: String? = null,
+        url: String? = null
+    ) {
+        Thread {
+            var connection:
+                HttpURLConnection? =
+                null
+
+            try {
+                connection =
+                    URL(
+                        CLIENT_ERROR_URL
+                    ).openConnection()
+                        as HttpURLConnection
+
+                connection.requestMethod =
+                    "POST"
+
+                connection.connectTimeout =
+                    2000
+
+                connection.readTimeout =
+                    2000
+
+                connection.doOutput =
+                    true
+
+                connection.setRequestProperty(
+                    "Content-Type",
+                    "application/json"
+                )
+
+                val payload =
+                    JSONObject().apply {
+                        put(
+                            "source",
+                            "android"
+                        )
+
+                        put(
+                            "message",
+                            message.take(
+                                1000
+                            )
+                        )
+
+                        if (
+                            !detail.isNullOrBlank()
+                        ) {
+                            put(
+                                "detail",
+                                detail.take(
+                                    4000
+                                )
+                            )
+                        }
+
+                        if (
+                            !url.isNullOrBlank()
+                        ) {
+                            put(
+                                "url",
+                                url.take(
+                                    1000
+                                )
+                            )
+                        }
+                    }
+
+                connection.outputStream.use {
+                    output ->
+                    output.write(
+                        payload
+                            .toString()
+                            .toByteArray(
+                                Charsets.UTF_8
+                            )
+                    )
+                }
+
+                connection.responseCode
+
+            } catch (
+                exception: Exception
+            ) {
+                Log.d(
+                    WAKE_LOG,
+                    "Could not forward Android error: " +
+                        exception.message
+                )
+
+            } finally {
+                connection?.disconnect()
+            }
+        }.start()
+    }
 
     private fun setupWebView() {
         WebView.setWebContentsDebuggingEnabled(
@@ -462,7 +576,7 @@ class MainActivity : AppCompatActivity() {
                             WAKE_LOG,
                             "Remote BMO page reported finished"
                         )
-                    }
+}
                 }
 
 
@@ -486,6 +600,98 @@ class MainActivity : AppCompatActivity() {
                             "Main WebView load failed: ${error?.description}"
                         )
 
+                        
+                        reportAndroidError(
+                            message =
+                                "Main WebView load failed",
+
+                            detail =
+                                error
+                                    ?.description
+                                    ?.toString(),
+
+                            url =
+                                request
+                                    ?.url
+                                    ?.toString()
+                        )
+showingBmoPage =
+                            false
+
+                        bmoPageReady =
+                            false
+
+                        checkBackendAndUpdateUi()
+                    }
+                }
+
+
+                override fun onReceivedHttpError(
+                    view: WebView?,
+                    request: WebResourceRequest?,
+                    errorResponse:
+                        android.webkit.WebResourceResponse?
+                ) {
+                    super.onReceivedHttpError(
+                        view,
+                        request,
+                        errorResponse
+                    )
+
+                    if (
+                        request?.isForMainFrame ==
+                        true
+                    ) {
+                        val statusCode =
+                            errorResponse
+                                ?.statusCode
+
+                        val reason =
+                            errorResponse
+                                ?.reasonPhrase
+
+                        val detail =
+                            buildString {
+                                append(
+                                    "HTTP "
+                                )
+
+                                append(
+                                    statusCode
+                                        ?: "unknown"
+                                )
+
+                                if (
+                                    !reason.isNullOrBlank()
+                                ) {
+                                    append(
+                                        " "
+                                    )
+
+                                    append(
+                                        reason
+                                    )
+                                }
+                            }
+
+                        Log.e(
+                            WAKE_LOG,
+                            "Main WebView HTTP failure: $detail"
+                        )
+
+                        reportAndroidError(
+                            message =
+                                "Main WebView HTTP failure",
+
+                            detail =
+                                detail,
+
+                            url =
+                                request
+                                    ?.url
+                                    ?.toString()
+                        )
+
                         showingBmoPage =
                             false
 
@@ -495,6 +701,85 @@ class MainActivity : AppCompatActivity() {
                         checkBackendAndUpdateUi()
                     }
                 }
+
+
+                override fun onRenderProcessGone(
+                    view: WebView?,
+                    detail:
+                        android.webkit.RenderProcessGoneDetail?
+                ): Boolean {
+                    val crashed =
+                        detail?.didCrash()
+                            ?: false
+
+                    val message =
+                        if (
+                            crashed
+                        ) {
+                            "WebView renderer crashed"
+                        } else {
+                            "WebView renderer terminated"
+                        }
+
+                    Log.e(
+                        WAKE_LOG,
+                        message
+                    )
+
+                    reportAndroidError(
+                        message =
+                            message,
+
+                        detail =
+                            "didCrash=$crashed",
+
+                        url =
+                            view?.url
+                    )
+
+                    showingBmoPage =
+                        false
+
+                    bmoPageReady =
+                        false
+
+                    /*
+                     * The old WebView renderer is dead and cannot safely
+                     * continue. Recreating the Activity gives BMO a fresh
+                     * WebView while keeping recovery inside the app.
+                     */
+                    mainHandler.post {
+                        try {
+                            recreate()
+
+                        } catch (
+                            exception: Exception
+                        ) {
+                            Log.e(
+                                WAKE_LOG,
+                                "Could not recreate Activity after renderer loss",
+                                exception
+                            )
+
+                            reportAndroidError(
+                                message =
+                                    "Renderer recovery failed",
+
+                                detail =
+                                    exception
+                                        .stackTraceToString()
+                            )
+                        }
+                    }
+
+                    /*
+                     * We handled the lost renderer ourselves.
+                     */
+                    return true
+                }
+
+
+
             }
 
         webView.settings.apply {
@@ -2336,9 +2621,27 @@ class MainActivity : AppCompatActivity() {
             )
         }
     }
-
-
     inner class BMOBridge {
+
+        /*
+         * Harmless diagnostics test hook.
+         *
+         * This performs no device action. It only verifies the
+         * Android -> Mac diagnostics pipeline.
+         */
+        @JavascriptInterface
+        fun reportDiagnosticTest(
+            message: String
+        ) {
+            reportAndroidError(
+                message =
+                    "Android diagnostics test",
+
+                detail =
+                    message
+            )
+        }
+
         @JavascriptInterface
         fun spotifyConnect() {
             runOnUiThread {
@@ -2960,7 +3263,35 @@ class MainActivity : AppCompatActivity() {
         }
         @JavascriptInterface
         fun getSpotifyState(): String {
-            return spotifyStateJson
+            val audioManager =
+                getSystemService(
+                    Context.AUDIO_SERVICE
+                ) as AudioManager
+
+            val localAudioActive =
+                audioManager.isMusicActive
+
+            return try {
+                JSONObject(
+                    spotifyStateJson
+                )
+                    .put(
+                        "local_audio_active",
+                        localAudioActive
+                    )
+                    .toString()
+
+            } catch (
+                exception: Exception
+            ) {
+                Log.w(
+                    SPOTIFY_LOG,
+                    "Could not add local audio state to Spotify snapshot",
+                    exception
+                )
+
+                spotifyStateJson
+            }
         }
 
 
@@ -4621,6 +4952,16 @@ class MainActivity : AppCompatActivity() {
         super.onDestroy()
     }
 }
+
+
+
+
+
+
+
+
+
+
 
 
 
