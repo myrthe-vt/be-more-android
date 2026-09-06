@@ -62,3 +62,4 @@ whisper.cpp/
 local.properties
 build/
 */build/
+.env.spotify

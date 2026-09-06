@@ -702,6 +702,277 @@ def normalize_expression_duration(action_data):
 
 
 
+
+# ---------------------------------------------------------------------------
+# Deterministic Spotify playback controls
+# ---------------------------------------------------------------------------
+
+
+
+def get_spotify_catalog_request(
+    user_text: str,
+):
+    """
+    Detect explicit artist and album playback requests.
+
+    Track playback remains handled separately.
+    """
+    text = str(
+        user_text or ""
+    ).strip()
+
+    if not text:
+        return None
+
+    text = text.strip(
+        " \\t\\r\\n"
+        "\"'“”‘’"
+    )
+
+    lower = (
+        text
+        .lower()
+        .rstrip("?.!")
+        .strip()
+    )
+
+    artist_prefixes = (
+        "play the artist ",
+        "play artist ",
+        "play some ",
+    )
+
+    for prefix in artist_prefixes:
+        if lower.startswith(
+            prefix
+        ):
+            query = text[
+                len(prefix):
+            ].rstrip(
+                "?.!"
+            ).strip()
+
+            if query:
+                return {
+                    "type": "artist",
+                    "query": query,
+                }
+
+    album_prefixes = (
+        "play the album ",
+        "play album ",
+    )
+
+    for prefix in album_prefixes:
+        if lower.startswith(
+            prefix
+        ):
+            query = text[
+                len(prefix):
+            ].rstrip(
+                "?.!"
+            ).strip()
+
+            if query:
+                return {
+                    "type": "album",
+                    "query": query,
+                }
+
+    if (
+        lower.startswith("play ")
+        and lower.endswith(" album")
+    ):
+        query = text[
+            len("play "):
+            -len(" album")
+        ].strip()
+
+        if query:
+            return {
+                "type": "album",
+                "query": query,
+            }
+
+    return None
+
+
+def get_spotify_track_query(
+    user_text: str,
+):
+    """
+    Extract a requested Spotify track from an explicit play command.
+
+    Transport commands such as "play the music again" are deliberately
+    excluded and remain handled by get_spotify_control_action().
+    """
+    text = str(
+        user_text or ""
+    ).strip()
+
+    if not text:
+        return None
+
+    text = text.strip(
+        " \\t\\r\\n"
+        "\"'“”‘’"
+    )
+
+    lower = text.lower().strip()
+
+    excluded = {
+        "play",
+        "play music",
+        "play the music",
+        "play the music again",
+        "play music again",
+        "start the music",
+        "start music",
+        "keep playing",
+        "continue playing",
+    }
+
+    if lower.rstrip("?.!") in excluded:
+        return None
+
+    prefixes = (
+        "play spotify ",
+        "play on spotify ",
+        "play me ",
+        "play ",
+    )
+
+    query = None
+
+    for prefix in prefixes:
+        if lower.startswith(
+            prefix
+        ):
+            query = text[
+                len(prefix):
+            ].strip()
+
+            break
+
+    if not query:
+        return None
+
+    query = query.rstrip(
+        "?.!"
+    ).strip()
+
+    if not query:
+        return None
+
+    return query
+
+
+def get_spotify_control_action(
+    user_text: str,
+):
+    """
+    Recognize simple Spotify transport commands before the LLM.
+
+    This deliberately handles only unambiguous playback controls.
+    Searching for a requested song/artist/album is handled separately.
+    """
+    text = str(
+        user_text or ""
+    ).strip().lower()
+
+    if not text:
+        return None
+
+    normalized = (
+        text
+        .replace("?", "")
+        .replace("!", "")
+        .replace(".", "")
+        .strip()
+    )
+
+    pause_phrases = {
+        "pause",
+        "pause it",
+        "pause music",
+        "pause the music",
+        "pause spotify",
+
+        # Common speech-to-text variants of "pause".
+        "paws",
+        "paws it",
+        "paws music",
+        "paws the music",
+        "paws spotify",
+        "pose",
+        "pose it",
+        "pose music",
+        "pose the music",
+        "pose spotify",
+
+        "stop the music",
+        "stop music",
+        "stop spotify",
+        # BMO_SPOTIFY_TURN_MUSIC_OFF_V1
+        "turn music off",
+        "turn the music off",
+    }
+
+    resume_phrases = {
+        "resume",
+        "resume music",
+        "resume the music",
+        "resume spotify",
+        "keep playing",
+        "keep the music playing",
+        "continue",
+        "continue playing",
+        "continue the music",
+        "play the music again",
+        "start the music again",
+    }
+
+    next_phrases = {
+        "next",
+        "next song",
+        "next track",
+        "skip",
+        "skip this",
+        "skip this song",
+        "skip this track",
+        "skip song",
+        "skip track",
+    }
+
+    previous_phrases = {
+        "previous",
+        "previous song",
+        "previous track",
+        "go back",
+        "go back a song",
+        "go back one song",
+        "go back a track",
+        "play the previous song",
+        "play the previous track",
+        "play the last song",
+        "last song",
+    }
+
+    if normalized in pause_phrases:
+        return "spotify_pause"
+
+    if normalized in resume_phrases:
+        return "spotify_resume"
+
+    if normalized in next_phrases:
+        return "spotify_next"
+
+    if normalized in previous_phrases:
+        return "spotify_previous"
+
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Expression fallback inference
 # ---------------------------------------------------------------------------
@@ -1676,6 +1947,271 @@ def chat(request: ChatRequest, background_tasks: BackgroundTasks):
         }
 
     # ------------------------------------------------------------------
+    # Deterministic Spotify playback routing
+    # ------------------------------------------------------------------
+    spotify_action = get_spotify_control_action(
+        user_text
+    )
+
+    if spotify_action:
+        logger.info(
+            "Deterministic Spotify control: %r -> %s",
+            user_text,
+            spotify_action,
+        )
+
+        response_history = save_android_memory(
+            list(
+                persistent_history
+            ) + [
+                {
+                    "role": "user",
+                    "content": user_text,
+                },
+                {
+                    "role": "assistant",
+                    "content": "",
+                },
+            ]
+        )
+
+        return {
+            "response": "",
+            "history": response_history,
+            "audio_url": None,
+            "action": {
+                "type": spotify_action,
+            },
+        }
+
+    # ------------------------------------------------------------------
+    # Deterministic Spotify artist/album routing
+    # ------------------------------------------------------------------
+    spotify_catalog_request = (
+        get_spotify_catalog_request(
+            user_text
+        )
+    )
+
+    if spotify_catalog_request:
+        spotify_type = (
+            spotify_catalog_request[
+                "type"
+            ]
+        )
+
+        spotify_query = (
+            spotify_catalog_request[
+                "query"
+            ]
+        )
+
+        logger.info(
+            "Deterministic Spotify %s request: %r -> %r",
+            spotify_type,
+            user_text,
+            spotify_query,
+        )
+
+        try:
+            from core.spotify import (
+                find_album,
+                find_artist,
+            )
+
+            if spotify_type == "artist":
+                spotify_item = (
+                    find_artist(
+                        spotify_query
+                    )
+                )
+            else:
+                spotify_item = (
+                    find_album(
+                        spotify_query
+                    )
+                )
+
+        except Exception:
+            logger.exception(
+                "Spotify %s search failed",
+                spotify_type,
+            )
+
+            spotify_item = None
+
+        if spotify_item:
+            logger.info(
+                "Spotify %s match: %s | %s",
+                spotify_type,
+                spotify_item.get(
+                    "name"
+                ),
+                spotify_item.get(
+                    "uri"
+                ),
+            )
+
+            response_history = (
+                save_android_memory(
+                    list(
+                        persistent_history
+                    ) + [
+                        {
+                            "role": "user",
+                            "content":
+                                user_text,
+                        },
+                        {
+                            "role":
+                                "assistant",
+                            "content":
+                                (
+                                    "Playing "
+                                    f"{spotify_item.get('name')}."
+                                ),
+                        },
+                    ]
+                )
+            )
+
+            return {
+                "response": "",
+                "history":
+                    response_history,
+                "audio_url": None,
+                "action": {
+                    "type":
+                        "spotify_play",
+
+                    "uri":
+                        spotify_item.get(
+                            "uri"
+                        ),
+
+                    "track":
+                        spotify_item.get(
+                            "name"
+                        ),
+
+                    "spotify_type":
+                        spotify_type,
+
+                    "artist":
+                        spotify_item.get(
+                            "artist"
+                        ),
+                },
+            }
+
+        logger.info(
+            "No Spotify %s match for %r",
+            spotify_type,
+            spotify_query,
+        )
+
+    # ------------------------------------------------------------------
+    # Deterministic Spotify track search routing
+    # ------------------------------------------------------------------
+    spotify_query = get_spotify_track_query(
+        user_text
+    )
+
+    if spotify_query:
+        logger.info(
+            "Deterministic Spotify track request: %r -> %r",
+            user_text,
+            spotify_query,
+        )
+
+        try:
+            from core.spotify import (
+                resolve_spotify_play_query,
+            )
+
+            spotify_track = (
+                resolve_spotify_play_query(
+                    spotify_query
+                )
+            )
+
+        except Exception as exception:
+            logger.exception(
+                "Spotify track search failed"
+            )
+
+            spotify_track = None
+
+        if spotify_track:
+            logger.info(
+                "Spotify match: %s | %s | %s",
+                spotify_track.get(
+                    "name"
+                ),
+                spotify_track.get(
+                    "artist"
+                ),
+                spotify_track.get(
+                    "uri"
+                ),
+            )
+
+            response_history = save_android_memory(
+                list(
+                    persistent_history
+                ) + [
+                    {
+                        "role": "user",
+                        "content": user_text,
+                    },
+                    {
+                        "role": "assistant",
+                        "content": (
+                            "Playing "
+                            f"{spotify_track.get('name')} "
+                            "by "
+                            f"{spotify_track.get('artist')}."
+                        ),
+                    },
+                ]
+            )
+
+            return {
+                "response": "",
+                "history": response_history,
+                "audio_url": None,
+                "action": {
+                    "type":
+                        "spotify_play",
+
+                    "uri":
+                        spotify_track.get(
+                            "uri"
+                        ),
+
+                    "track":
+                        spotify_track.get(
+                            "name"
+                        ),
+
+                    "artist":
+                        spotify_track.get(
+                            "artist"
+                        ),
+
+                    "album":
+                        spotify_track.get(
+                            "album"
+                        ),
+                },
+            }
+
+        logger.info(
+            "No Spotify track match for: %r",
+            spotify_query,
+        )
+
+    # ------------------------------------------------------------------
     # Deterministic Android network-state routing
     # ------------------------------------------------------------------
     network_request_kind = get_network_request_kind(
@@ -1922,6 +2458,191 @@ def chat(request: ChatRequest, background_tasks: BackgroundTasks):
                     "type": "homelab_status",
                 },
             }
+
+    # ------------------------------------------------------------------
+    # BMO_SPOTIFY_POLISH_ROUTER_V1
+    # Deterministic Spotify polish controls
+    # ------------------------------------------------------------------
+    #
+    # These deliberately bypass Qwen. They are hardware/media commands,
+    # and Android remains the source of truth for actual Spotify state.
+
+    spotify_command_text = (
+        str(
+            user_text
+            or ""
+        )
+        .strip()
+        .lower()
+    )
+
+    spotify_command_text = re.sub(
+        r"[.!?]+$",
+        "",
+        spotify_command_text,
+    ).strip()
+
+    # "What's playing?"
+    if re.fullmatch(
+        r"(?:"
+        r"what(?:'s| is) (?:currently )?playing|"
+        r"what song is this|"
+        r"what song is playing|"
+        r"which song is this|"
+        r"who is this by"
+        r")",
+        spotify_command_text,
+        re.IGNORECASE,
+    ):
+        logger.info(
+            "Deterministic Spotify now-playing request: %r",
+            user_text,
+        )
+
+        return {
+            "response": "",
+            "history": persistent_history,
+            "audio_url": None,
+            "action": {
+                "type": "spotify_now_playing",
+            },
+        }
+
+    # Shuffle ON
+    if re.fullmatch(
+        r"(?:"
+        r"shuffle|"
+        r"shuffle the music|"
+        r"shuffle music|"
+        r"turn shuffle on|"
+        r"turn on shuffle|"
+        r"enable shuffle"
+        r")",
+        spotify_command_text,
+        re.IGNORECASE,
+    ):
+        logger.info(
+            "Deterministic Spotify shuffle ON: %r",
+            user_text,
+        )
+
+        return {
+            "response": "",
+            "history": persistent_history,
+            "audio_url": None,
+            "action": {
+                "type": "spotify_shuffle",
+                "enabled": True,
+            },
+        }
+
+    # Shuffle OFF
+    if re.fullmatch(
+        r"(?:"
+        r"turn shuffle off|"
+        r"turn off shuffle|"
+        r"disable shuffle|"
+        r"stop shuffling"
+        r")",
+        spotify_command_text,
+        re.IGNORECASE,
+    ):
+        logger.info(
+            "Deterministic Spotify shuffle OFF: %r",
+            user_text,
+        )
+
+        return {
+            "response": "",
+            "history": persistent_history,
+            "audio_url": None,
+            "action": {
+                "type": "spotify_shuffle",
+                "enabled": False,
+            },
+        }
+
+    # Repeat current song
+    if re.fullmatch(
+        r"(?:"
+        r"repeat this song|"
+        r"repeat this track|"
+        r"repeat the song|"
+        r"repeat the track|"
+        r"repeat one"
+        r")",
+        spotify_command_text,
+        re.IGNORECASE,
+    ):
+        logger.info(
+            "Deterministic Spotify repeat ONE: %r",
+            user_text,
+        )
+
+        return {
+            "response": "",
+            "history": persistent_history,
+            "audio_url": None,
+            "action": {
+                "type": "spotify_repeat",
+                "mode": "one",
+            },
+        }
+
+    # Repeat context / playlist / album
+    if re.fullmatch(
+        r"(?:"
+        r"repeat the music|"
+        r"turn repeat on|"
+        r"turn on repeat|"
+        r"enable repeat|"
+        r"repeat all|"
+        r"repeat everything"
+        r")",
+        spotify_command_text,
+        re.IGNORECASE,
+    ):
+        logger.info(
+            "Deterministic Spotify repeat ALL: %r",
+            user_text,
+        )
+
+        return {
+            "response": "",
+            "history": persistent_history,
+            "audio_url": None,
+            "action": {
+                "type": "spotify_repeat",
+                "mode": "all",
+            },
+        }
+
+    # Repeat OFF
+    if re.fullmatch(
+        r"(?:"
+        r"turn repeat off|"
+        r"turn off repeat|"
+        r"disable repeat|"
+        r"stop repeating"
+        r")",
+        spotify_command_text,
+        re.IGNORECASE,
+    ):
+        logger.info(
+            "Deterministic Spotify repeat OFF: %r",
+            user_text,
+        )
+
+        return {
+            "response": "",
+            "history": persistent_history,
+            "audio_url": None,
+            "action": {
+                "type": "spotify_repeat",
+                "mode": "off",
+            },
+        }
+
 
     # ------------------------------------------------------------------
     # Deterministic current-info / explicit web-search routing
@@ -2515,6 +3236,93 @@ def vision(
                 f"{exception}"
             )
         }
+
+
+
+# BMO_SPOTIFY_UNAVAILABLE_TTS_V1
+@app.post("/api/spotify-unavailable")
+def spotify_unavailable(
+    background_tasks: BackgroundTasks,
+):
+    """
+    Generate BMO's deterministic Spotify-unavailable message.
+
+    This deliberately bypasses the LLM. Android has already determined
+    that Spotify/App Remote failed, so the frontend only needs a short,
+    reliable spoken explanation.
+    """
+    response_text = (
+        "Spotify isn't available right now."
+    )
+
+    tts_content = (
+        clean_text_for_speech(
+            response_text
+        )
+        or response_text
+    )
+
+    background_tasks.add_task(
+        _cleanup_old_audio
+    )
+
+    filename = (
+        f"response_{uuid.uuid4().hex[:8]}.wav"
+    )
+
+    audio_url = generate_audio_file(
+        tts_content,
+        filename,
+    )
+
+    return {
+        "response": response_text,
+        "audio_url": audio_url,
+    }
+
+
+
+# BMO_SPOTIFY_NOW_PLAYING_TTS_V1
+@app.post("/api/spotify-now-playing")
+def spotify_now_playing_tts(
+    request: ChatRequest,
+    background_tasks: BackgroundTasks,
+):
+    """
+    Speak Android's current Spotify metadata using BMO's normal Piper voice.
+    """
+    response_text = (
+        str(
+            request.message
+            or ""
+        ).strip()
+        or "Spotify isn't playing anything right now."
+    )
+
+    tts_content = (
+        clean_text_for_speech(
+            response_text
+        )
+        or response_text
+    )
+
+    background_tasks.add_task(
+        _cleanup_old_audio
+    )
+
+    filename = (
+        f"response_{uuid.uuid4().hex[:8]}.wav"
+    )
+
+    audio_url = generate_audio_file(
+        tts_content,
+        filename,
+    )
+
+    return {
+        "response": response_text,
+        "audio_url": audio_url,
+    }
 
 
 @app.post("/api/transcribe")

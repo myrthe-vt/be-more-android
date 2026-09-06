@@ -635,6 +635,9 @@ let audioChunks = [];
 let isRecording = false;
 let recordingStartPending = false;
 
+// BMO_VOICE_DUCKING_V1
+let voiceInteractionDuckingActive = false;
+
 let holdStartTimer = null;
 let activePointerId = null;
 
@@ -691,6 +694,10 @@ function setFaceState(
 ) {
     bmoRenderer.state =
         state;
+
+    maybeEndVoiceInteractionDucking(
+        state
+    );
 
     if (
         state !==
@@ -1710,6 +1717,281 @@ function handleServerAction(
             startNativeVisionCapture(
                 captureAction.prompt
             );
+        }
+
+        return true;
+    }
+
+    if (
+        action.type ===
+            "spotify_now_playing"
+    ) {
+        handleBMOSpotifyNowPlayingRequest();
+
+        return true;
+    }
+
+
+    if (
+        action.type ===
+            "spotify_shuffle" ||
+        action.type ===
+            "spotify_repeat"
+    ) {
+        const nativeBridge =
+            getNativeBridge();
+
+        if (
+            !nativeBridge
+        ) {
+            console.error(
+                "Spotify polish action requested without Android bridge:",
+                action.type
+            );
+
+            if (
+                window.onSpotifyUnavailable
+            ) {
+                window.onSpotifyUnavailable();
+            }
+
+            return true;
+        }
+
+        try {
+            if (
+                action.type ===
+                    "spotify_shuffle"
+            ) {
+                nativeBridge.spotifySetShuffle(
+                    Boolean(
+                        action.enabled
+                    )
+                );
+
+                showStatus(
+                    action.enabled
+                        ? "Shuffle on"
+                        : "Shuffle off",
+                    1600
+                );
+
+            } else {
+                const repeatMode =
+                    String(
+                        action.mode ||
+                        "all"
+                    );
+
+                nativeBridge.spotifySetRepeat(
+                    repeatMode
+                );
+
+                if (
+                    repeatMode ===
+                        "one"
+                ) {
+                    showStatus(
+                        "Repeating this song",
+                        1600
+                    );
+
+                } else if (
+                    repeatMode ===
+                        "off"
+                ) {
+                    showStatus(
+                        "Repeat off",
+                        1600
+                    );
+
+                } else {
+                    showStatus(
+                        "Repeat on",
+                        1600
+                    );
+                }
+            }
+
+        } catch (
+            error
+        ) {
+            console.error(
+                "Spotify polish action failed:",
+                action.type,
+                error
+            );
+
+            if (
+                window.onSpotifyUnavailable
+            ) {
+                window.onSpotifyUnavailable();
+            }
+        }
+
+        if (
+            !isRecording &&
+            !currentAudio
+        ) {
+            setFaceState(
+                "idle"
+            );
+
+            resetDaydreamTimer();
+        }
+
+        return true;
+    }
+
+
+    if (
+        action.type ===
+            "spotify_play" ||
+        action.type ===
+            "spotify_pause" ||
+        action.type ===
+            "spotify_resume" ||
+        action.type ===
+            "spotify_next" ||
+        action.type ===
+            "spotify_previous"
+    ) {
+        const nativeBridge =
+            getNativeBridge();
+
+        if (
+            !nativeBridge
+        ) {
+            console.error(
+                "Spotify action requested without Android bridge:",
+                action.type
+            );
+
+            showStatus(
+                "Spotify controls unavailable",
+                1800
+            );
+
+            return true;
+        }
+
+        try {
+            /*
+             * A Spotify command completes the current voice interaction
+             * immediately. There is no TTS response afterward, so clean up
+             * the thinking state here instead of leaving BMO waiting forever.
+             */
+            clearTimeout(
+                bmoThinkingSoundTimer
+            );
+
+            bmoThinkingSoundTimer =
+                null;
+
+            stopBmoPersonalitySound();
+
+            switch (
+                action.type
+            ) {
+                case "spotify_play":
+                    if (
+                        !action.uri
+                    ) {
+                        console.error(
+                            "spotify_play missing URI"
+                        );
+
+                        showStatus(
+                            "Spotify track unavailable",
+                            1800
+                        );
+
+                        break;
+                    }
+
+                    nativeBridge.spotifyPlay(
+                        String(
+                            action.uri
+                        )
+                    );
+
+                    showStatus(
+                        action.track
+                            ? `Playing ${action.track}`
+                            : "Playing...",
+                        1800
+                    );
+                    break;
+
+                case "spotify_pause":
+                    nativeBridge
+                        .spotifyPause();
+
+                    showStatus(
+                        "Music paused",
+                        1400
+                    );
+                    break;
+
+                case "spotify_resume":
+                    nativeBridge
+                        .spotifyResume();
+
+                    showStatus(
+                        "Music resumed",
+                        1400
+                    );
+                    break;
+
+                case "spotify_next":
+                    nativeBridge
+                        .spotifyNext();
+
+                    showStatus(
+                        "Skipping...",
+                        1400
+                    );
+                    break;
+
+                case "spotify_previous":
+                    nativeBridge
+                        .spotifyPrevious();
+
+                    showStatus(
+                        "Going back...",
+                        1400
+                    );
+                    break;
+            }
+
+        } catch (
+            error
+        ) {
+            console.error(
+                "Spotify native action failed:",
+                action.type,
+                error
+            );
+
+            showStatus(
+                "Spotify command failed",
+                1800
+            );
+        }
+
+        /*
+         * handleServerAction() returns early for client-side actions,
+         * so restore BMO's normal face explicitly after Spotify control.
+         */
+        if (
+            !isRecording &&
+            !currentAudio
+        ) {
+            setFaceState(
+                "idle"
+            );
+
+            resetDaydreamTimer();
         }
 
         return true;
@@ -2909,6 +3191,131 @@ function getRecorderOptions() {
  * Recording
  */
 
+
+// BMO voice-interaction audio ducking
+//
+// Android owns the actual media volume. The WebView only marks
+// the beginning and end of a voice interaction.
+function beginVoiceInteractionDucking() {
+    if (
+        voiceInteractionDuckingActive
+    ) {
+        return;
+    }
+
+    const nativeBridge =
+        getNativeBridge();
+
+    if (
+        !nativeBridge ||
+        typeof nativeBridge.beginVoiceInteraction !==
+            "function"
+    ) {
+        return;
+    }
+
+    try {
+        nativeBridge.beginVoiceInteraction();
+
+        voiceInteractionDuckingActive =
+            true;
+
+        console.debug(
+            "BMO voice interaction: media duck requested"
+        );
+
+    } catch (error) {
+        console.error(
+            "Could not duck Android media volume:",
+            error
+        );
+    }
+}
+
+
+function endVoiceInteractionDucking() {
+    if (
+        !voiceInteractionDuckingActive
+    ) {
+        return;
+    }
+
+    const nativeBridge =
+        getNativeBridge();
+
+    /*
+     * Clear our local state even if the bridge disappeared.
+     * This prevents a stale frontend flag from poisoning the
+     * next interaction.
+     */
+    voiceInteractionDuckingActive =
+        false;
+
+    if (
+        !nativeBridge ||
+        typeof nativeBridge.endVoiceInteraction !==
+            "function"
+    ) {
+        return;
+    }
+
+    try {
+        nativeBridge.endVoiceInteraction();
+
+        console.debug(
+            "BMO voice interaction: media restore requested"
+        );
+
+    } catch (error) {
+        console.error(
+            "Could not restore Android media volume:",
+            error
+        );
+    }
+}
+
+
+function maybeEndVoiceInteractionDucking(
+    state
+) {
+    if (
+        !voiceInteractionDuckingActive
+    ) {
+        return;
+    }
+
+    /*
+     * These are the three states belonging to a normal voice
+     * interaction. Keep Spotify ducked throughout all of them.
+     */
+    if (
+        [
+            "listening",
+            "thinking",
+            "speaking",
+        ].includes(
+            state
+        )
+    ) {
+        return;
+    }
+
+    /*
+     * Do not restore while recording/audio is still genuinely
+     * active, even if some temporary face state changes.
+     */
+    if (
+        isRecording ||
+        recordingStartPending ||
+        currentAudio
+    ) {
+        return;
+    }
+
+    endVoiceInteractionDucking();
+}
+
+
 async function startRecording() {
     resetDaydreamTimer();
 
@@ -2946,6 +3353,8 @@ async function startRecording() {
 
     recordingStartPending =
         true;
+
+    beginVoiceInteractionDucking();
 
     const nativeBridge =
         getNativeBridge();
@@ -4136,6 +4545,30 @@ window.onNativeRecordingStarted =
 
 window.onNativeRecordingStopped =
     function () {
+        // BMO_RESTORE_AFTER_LISTENING_V1
+        //
+        // Microphone capture is finished now, so Spotify no longer
+        // needs to stay ducked. Keep the wider voice interaction alive
+        // for the later Spotify audio-focus resume handling.
+        const nativeBridge =
+            getNativeBridge();
+
+        if (
+            nativeBridge &&
+            typeof nativeBridge.restoreVoiceInteractionVolume ===
+                "function"
+        ) {
+            try {
+                nativeBridge.restoreVoiceInteractionVolume();
+
+            } catch (error) {
+                console.error(
+                    "Could not restore Android media volume after listening:",
+                    error
+                );
+            }
+        }
+
         recordingStartPending =
             false;
 
@@ -4568,6 +5001,98 @@ window.onNativeVisionError =
             },
             1800
         );
+    };
+
+
+
+/*
+ * BMO_SPOTIFY_UNAVAILABLE_UI_V1
+ *
+ * Android calls this only after Spotify genuinely failed. A merely closed
+ * Spotify app gets a reconnect attempt first, so successful resurrection
+ * stays silent.
+ */
+window.onSpotifyUnavailable =
+    async function () {
+        const message =
+            "Spotify isn't available right now.";
+
+        console.error(
+            "BMO Spotify unavailable"
+        );
+
+        showTranscript(
+            message,
+            4500
+        );
+
+        showStatus(
+            "Spotify unavailable",
+            2500
+        );
+
+        setFaceState(
+            "confused"
+        );
+
+        try {
+            const response =
+                await fetch(
+                    "/api/spotify-unavailable",
+                    {
+                        method:
+                            "POST",
+                    }
+                );
+
+            if (
+                !response.ok
+            ) {
+                throw new Error(
+                    `Spotify fallback HTTP ${response.status}`
+                );
+            }
+
+            const data =
+                await response.json();
+
+            setBackendOnline(
+                true
+            );
+
+            if (
+                data.audio_url
+            ) {
+                await playBMOAudio(
+                    data.audio_url
+                );
+
+                return;
+            }
+
+        } catch (
+            error
+        ) {
+            console.error(
+                "Could not play Spotify unavailable message:",
+                error
+            );
+        }
+
+        /*
+         * Even if Piper/backend speech fails, do not leave BMO stuck in
+         * confused/thinking mode. The visible message above is still useful.
+         */
+        if (
+            !isRecording &&
+            !currentAudio
+        ) {
+            setFaceState(
+                "idle"
+            );
+
+            resetDaydreamTimer();
+        }
     };
 
 
@@ -9837,3 +10362,1660 @@ console.log(
 );
 
 /* === END BMO PRONUNCIATION DEBUG EDITOR === */
+
+
+/* BMO_SPOTIFY_POLISH_FRONTEND_V1 */
+
+
+async function handleBMOSpotifyNowPlayingRequest() {
+    let state;
+
+    try {
+        state =
+            readBMONativeSpotifyState();
+
+    } catch (
+        error
+    ) {
+        console.error(
+            "Could not read Spotify for now-playing request:",
+            error
+        );
+
+        if (
+            window.onSpotifyUnavailable
+        ) {
+            window.onSpotifyUnavailable();
+        }
+
+        return;
+    }
+
+    if (
+        !state ||
+        !state.available ||
+        !state.connected
+    ) {
+        if (
+            window.onSpotifyUnavailable
+        ) {
+            window.onSpotifyUnavailable();
+        }
+
+        return;
+    }
+
+    const track =
+        String(
+            state.track ||
+            ""
+        ).trim();
+
+    const artist =
+        String(
+            state.artist ||
+            ""
+        ).trim();
+
+    let message;
+
+    if (
+        !track
+    ) {
+        message =
+            "Spotify isn't playing anything right now.";
+
+    } else if (
+        artist
+    ) {
+        message =
+            `This is ${track} by ${artist}.`;
+
+    } else {
+        message =
+            `This is ${track}.`;
+    }
+
+    showTranscript(
+        message,
+        4500
+    );
+
+    try {
+        const response =
+            await fetch(
+                "/api/spotify-now-playing",
+                {
+                    method:
+                        "POST",
+
+                    headers: {
+                        "Content-Type":
+                            "application/json",
+                    },
+
+                    body:
+                        JSON.stringify(
+                            {
+                                message:
+                                    message,
+
+                                history:
+                                    [],
+
+                                play_on_hardware:
+                                    false,
+                            }
+                        ),
+                }
+            );
+
+        if (
+            !response.ok
+        ) {
+            throw new Error(
+                `Spotify now-playing HTTP ${response.status}`
+            );
+        }
+
+        const data =
+            await response.json();
+
+        if (
+            data.audio_url
+        ) {
+            await playBMOAudio(
+                data.audio_url
+            );
+
+            return;
+        }
+
+    } catch (
+        error
+    ) {
+        console.error(
+            "Spotify now-playing speech failed:",
+            error
+        );
+    }
+
+    if (
+        !isRecording &&
+        !currentAudio
+    ) {
+        setFaceState(
+            "idle"
+        );
+
+        resetDaydreamTimer();
+    }
+}
+
+
+/* === BMO SPOTIFY DEBUG CONTROLS === */
+
+const BMO_SPOTIFY_TEST_URI =
+    "spotify:track:1eivMnftGIAIeTDUfTssVX";
+
+
+function readBMONativeSpotifyState() {
+    const bridge =
+        getNativeBridge();
+
+    if (!bridge) {
+        return {
+            connected: false,
+            available: false,
+        };
+    }
+
+    try {
+        /*
+         * Android 8 JavascriptInterface methods should be called
+         * directly rather than inspected with typeof.
+         */
+        const raw =
+            bridge.getSpotifyState();
+
+        const parsed =
+            JSON.parse(
+                String(
+                    raw ||
+                    "{}"
+                )
+            );
+
+        return {
+            available: true,
+            connected:
+                Boolean(
+                    parsed.connected
+                ),
+
+            playing:
+                Boolean(
+                    parsed.playing
+                ),
+
+            paused:
+                Boolean(
+                    parsed.paused
+                ),
+
+            track:
+                parsed.track ||
+                null,
+
+            artist:
+                parsed.artist ||
+                null,
+
+            album:
+                parsed.album ||
+                null,
+
+            uri:
+                parsed.uri ||
+                null,
+
+            positionMs:
+                parsed.position_ms === null ||
+                parsed.position_ms === undefined
+                    ? null
+                    : Number(
+                        parsed.position_ms
+                    ),
+
+            durationMs:
+                parsed.duration_ms === null ||
+                parsed.duration_ms === undefined
+                    ? null
+                    : Number(
+                        parsed.duration_ms
+                    ),
+        };
+
+    } catch (error) {
+        console.warn(
+            "Could not read Spotify state:",
+            error
+        );
+
+        return {
+            connected: false,
+            available: true,
+            error:
+                String(
+                    error
+                ),
+        };
+    }
+}
+
+
+function callBMONativeSpotify(
+    action,
+    argument = null
+) {
+    const bridge =
+        getNativeBridge();
+
+    if (!bridge) {
+        showStatus(
+            "Spotify bridge unavailable",
+            1800
+        );
+
+        return false;
+    }
+
+    try {
+        switch (
+            action
+        ) {
+            case "play":
+                bridge.spotifyPlay(
+                    String(
+                        argument ||
+                        ""
+                    )
+                );
+                break;
+
+            case "pause":
+                bridge.spotifyPause();
+                break;
+
+            case "resume":
+                bridge.spotifyResume();
+                break;
+
+            case "next":
+                bridge.spotifyNext();
+                break;
+
+            case "previous":
+                bridge.spotifyPrevious();
+                break;
+
+            case "connect":
+                bridge.spotifyConnect();
+                break;
+
+            default:
+                return false;
+        }
+
+        return true;
+
+    } catch (error) {
+        console.error(
+            `Spotify action failed: ${action}`,
+            error
+        );
+
+        showStatus(
+            "Spotify command failed",
+            1800
+        );
+
+        return false;
+    }
+}
+
+
+function refreshBMOSpotifyDebug() {
+    const section =
+        document.getElementById(
+            "bmo-debug-spotify"
+        );
+
+    if (!section) {
+        return;
+    }
+
+    const state =
+        readBMONativeSpotifyState();
+
+    const setText =
+        (
+            id,
+            value
+        ) => {
+            const element =
+                document.getElementById(
+                    id
+                );
+
+            if (element) {
+                element.textContent =
+                    String(
+                        value
+                    );
+            }
+        };
+
+    if (
+        !state.available
+    ) {
+        setText(
+            "bmo-debug-spotify-connection",
+            "native bridge unavailable"
+        );
+
+        setText(
+            "bmo-debug-spotify-playback",
+            "unknown"
+        );
+
+        setText(
+            "bmo-debug-spotify-track",
+            "—"
+        );
+
+        setText(
+            "bmo-debug-spotify-artist",
+            "—"
+        );
+
+        setText(
+            "bmo-debug-spotify-album",
+            "—"
+        );
+
+        setText(
+            "bmo-debug-spotify-uri",
+            "—"
+        );
+
+        return;
+    }
+
+    setText(
+        "bmo-debug-spotify-connection",
+        state.connected
+            ? "✓ connected"
+            : "✗ disconnected"
+    );
+
+    setText(
+        "bmo-debug-spotify-playback",
+        state.connected
+            ? state.playing
+                ? "▶ playing"
+                : state.paused
+                    ? "⏸ paused"
+                    : "idle"
+            : "unavailable"
+    );
+
+    setText(
+        "bmo-debug-spotify-track",
+        state.track ||
+            "—"
+    );
+
+    setText(
+        "bmo-debug-spotify-artist",
+        state.artist ||
+            "—"
+    );
+
+    setText(
+        "bmo-debug-spotify-album",
+        state.album ||
+            "—"
+    );
+
+    setText(
+        "bmo-debug-spotify-uri",
+        state.uri ||
+            "—"
+    );
+}
+
+
+function installBMOSpotifyDebugControls() {
+    if (
+        document.getElementById(
+            "bmo-debug-spotify"
+        )
+    ) {
+        refreshBMOSpotifyDebug();
+
+        return true;
+    }
+
+    const faceButtons =
+        document.getElementById(
+            "bmo-debug-face-buttons"
+        );
+
+    if (!faceButtons) {
+        return false;
+    }
+
+    const section =
+        document.createElement(
+            "div"
+        );
+
+    section.id =
+        "bmo-debug-spotify";
+
+    Object.assign(
+        section.style,
+        {
+            marginTop:
+                "18px",
+
+            marginBottom:
+                "18px",
+
+            paddingTop:
+                "15px",
+
+            paddingBottom:
+                "15px",
+
+            borderTop:
+                "1px solid rgba(0,0,0,0.20)",
+
+            borderBottom:
+                "1px solid rgba(0,0,0,0.20)",
+        }
+    );
+
+
+    const heading =
+        document.createElement(
+            "div"
+        );
+
+    heading.textContent =
+        "Spotify";
+
+    Object.assign(
+        heading.style,
+        {
+            fontWeight:
+                "900",
+
+            fontSize:
+                "18px",
+
+            marginBottom:
+                "10px",
+        }
+    );
+
+    section.appendChild(
+        heading
+    );
+
+
+    const stateGrid =
+        document.createElement(
+            "div"
+        );
+
+    Object.assign(
+        stateGrid.style,
+        {
+            display:
+                "grid",
+
+            gridTemplateColumns:
+                "100px minmax(0, 1fr)",
+
+            gap:
+                "6px 10px",
+
+            marginBottom:
+                "12px",
+
+            padding:
+                "10px",
+
+            border:
+                "2px solid #111",
+
+            borderRadius:
+                "10px",
+
+            background:
+                "rgba(255,255,255,0.45)",
+
+            fontFamily:
+                "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+
+            fontSize:
+                "13px",
+        }
+    );
+
+    const rows = [
+        [
+            "Status",
+            "bmo-debug-spotify-connection",
+        ],
+        [
+            "Playback",
+            "bmo-debug-spotify-playback",
+        ],
+        [
+            "Track",
+            "bmo-debug-spotify-track",
+        ],
+        [
+            "Artist",
+            "bmo-debug-spotify-artist",
+        ],
+        [
+            "Album",
+            "bmo-debug-spotify-album",
+        ],
+        [
+            "URI",
+            "bmo-debug-spotify-uri",
+        ],
+    ];
+
+    for (
+        const [
+            labelText,
+            valueId,
+        ]
+        of rows
+    ) {
+        const label =
+            document.createElement(
+                "div"
+            );
+
+        label.textContent =
+            labelText;
+
+        label.style.fontWeight =
+            "800";
+
+        const value =
+            document.createElement(
+                "div"
+            );
+
+        value.id =
+            valueId;
+
+        value.textContent =
+            "...";
+
+        value.style.overflowWrap =
+            "anywhere";
+
+        stateGrid.appendChild(
+            label
+        );
+
+        stateGrid.appendChild(
+            value
+        );
+    }
+
+    section.appendChild(
+        stateGrid
+    );
+
+
+    const controls =
+        document.createElement(
+            "div"
+        );
+
+    controls.className =
+        "bmo-debug-buttons";
+
+
+    const buttons = [
+        {
+            label:
+                "Play DCC",
+
+            action:
+                "play",
+
+            argument:
+                BMO_SPOTIFY_TEST_URI,
+        },
+        {
+            label:
+                "Pause",
+
+            action:
+                "pause",
+        },
+        {
+            label:
+                "Resume",
+
+            action:
+                "resume",
+        },
+        {
+            label:
+                "Previous",
+
+            action:
+                "previous",
+        },
+        {
+            label:
+                "Next",
+
+            action:
+                "next",
+        },
+        {
+            label:
+                "Reconnect",
+
+            action:
+                "connect",
+        },
+    ];
+
+
+    for (
+        const config
+        of buttons
+    ) {
+        const button =
+            document.createElement(
+                "button"
+            );
+
+        button.type =
+            "button";
+
+        button.className =
+            "bmo-debug-button";
+
+        button.textContent =
+            config.label;
+
+        button.addEventListener(
+            "click",
+            (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+
+                callBMONativeSpotify(
+                    config.action,
+                    config.argument ||
+                        null
+                );
+
+                setTimeout(
+                    refreshBMOSpotifyDebug,
+                    250
+                );
+
+                setTimeout(
+                    refreshBMOSpotifyDebug,
+                    900
+                );
+            }
+        );
+
+        controls.appendChild(
+            button
+        );
+    }
+
+    section.appendChild(
+        controls
+    );
+
+
+    /*
+     * Put Spotify directly before the expression test buttons.
+     * This works with the existing modular debug extensions.
+     */
+    faceButtons.parentNode.insertBefore(
+        section,
+        faceButtons
+    );
+
+    refreshBMOSpotifyDebug();
+
+    return true;
+}
+
+
+if (
+    !installBMOSpotifyDebugControls()
+) {
+    const bmoSpotifyDebugObserver =
+        new MutationObserver(
+            () => {
+                if (
+                    installBMOSpotifyDebugControls()
+                ) {
+                    bmoSpotifyDebugObserver
+                        .disconnect();
+                }
+            }
+        );
+
+    bmoSpotifyDebugObserver.observe(
+        document.body,
+        {
+            childList:
+                true,
+
+            subtree:
+                true,
+        }
+    );
+
+    setTimeout(
+        () => {
+            bmoSpotifyDebugObserver
+                .disconnect();
+        },
+        15000
+    );
+}
+
+
+/*
+ * The native player-state subscription updates independently.
+ * Refresh the visible debug values once per second.
+ */
+setInterval(
+    () => {
+        if (
+            document.getElementById(
+                "bmo-debug-spotify"
+            )
+        ) {
+            refreshBMOSpotifyDebug();
+        }
+    },
+    1000
+);
+
+
+console.log(
+    "BMO Spotify debug controls ready"
+);
+
+/* === END BMO SPOTIFY DEBUG CONTROLS === */
+
+
+
+/* === BMO SPOTIFY MUSIC MODE === */
+
+const BMO_SPOTIFY_MUSIC_MODE_INTERVAL_MS =
+    1000;
+
+let bmoSpotifyMusicModeTimer =
+    null;
+
+let bmoSpotifyNowPlayingElement =
+    null;
+
+
+// BMO_SPOTIFY_PROGRESS_UI_V1
+
+let bmoSpotifyNowPlayingLabelElement =
+    null;
+
+let bmoSpotifyProgressRowElement =
+    null;
+
+let bmoSpotifyProgressFillElement =
+    null;
+
+let bmoSpotifyProgressTimeElement =
+    null;
+
+
+/*
+ * Spotify's App Remote state does not need to update every second.
+ *
+ * Keep the latest native playback position as an anchor and advance
+ * it locally while Spotify is playing. Whenever Android supplies a
+ * different position, URI, or playback state, re-anchor immediately.
+ */
+let bmoSpotifyProgressAnchorPositionMs =
+    null;
+
+let bmoSpotifyProgressAnchorTimeMs =
+    null;
+
+let bmoSpotifyProgressLastNativePositionMs =
+    null;
+
+let bmoSpotifyProgressLastUri =
+    null;
+
+let bmoSpotifyProgressLastPlaying =
+    null;
+
+
+function resetBMOSpotifyProgressAnchor() {
+    bmoSpotifyProgressAnchorPositionMs =
+        null;
+
+    bmoSpotifyProgressAnchorTimeMs =
+        null;
+
+    bmoSpotifyProgressLastNativePositionMs =
+        null;
+
+    bmoSpotifyProgressLastUri =
+        null;
+
+    bmoSpotifyProgressLastPlaying =
+        null;
+}
+
+
+function formatBMOSpotifyTime(
+    milliseconds
+) {
+    const totalSeconds =
+        Math.max(
+            0,
+            Math.floor(
+                Number(
+                    milliseconds
+                ) /
+                1000
+            )
+        );
+
+    const hours =
+        Math.floor(
+            totalSeconds /
+            3600
+        );
+
+    const minutes =
+        Math.floor(
+            (
+                totalSeconds %
+                3600
+            ) /
+            60
+        );
+
+    const seconds =
+        totalSeconds %
+        60;
+
+    if (
+        hours >
+        0
+    ) {
+        return (
+            `${hours}:` +
+            `${String(minutes).padStart(2, "0")}:` +
+            `${String(seconds).padStart(2, "0")}`
+        );
+    }
+
+    return (
+        `${minutes}:` +
+        `${String(seconds).padStart(2, "0")}`
+    );
+}
+
+
+function getBMOSpotifyDisplayPosition(
+    state
+) {
+    if (
+        !state
+    ) {
+        return null;
+    }
+
+    const nativePosition =
+        Number(
+            state.positionMs
+        );
+
+    const duration =
+        Number(
+            state.durationMs
+        );
+
+    if (
+        !Number.isFinite(
+            nativePosition
+        ) ||
+        !Number.isFinite(
+            duration
+        ) ||
+        duration <=
+            0
+    ) {
+        return null;
+    }
+
+    const uri =
+        String(
+            state.uri ||
+            ""
+        );
+
+    const playing =
+        Boolean(
+            state.playing
+        );
+
+    const now =
+        Date.now();
+
+    const nativeStateChanged =
+        bmoSpotifyProgressAnchorPositionMs ===
+            null ||
+        bmoSpotifyProgressAnchorTimeMs ===
+            null ||
+        bmoSpotifyProgressLastUri !==
+            uri ||
+        bmoSpotifyProgressLastNativePositionMs !==
+            nativePosition ||
+        bmoSpotifyProgressLastPlaying !==
+            playing;
+
+    if (
+        nativeStateChanged
+    ) {
+        bmoSpotifyProgressAnchorPositionMs =
+            nativePosition;
+
+        bmoSpotifyProgressAnchorTimeMs =
+            now;
+
+        bmoSpotifyProgressLastNativePositionMs =
+            nativePosition;
+
+        bmoSpotifyProgressLastUri =
+            uri;
+
+        bmoSpotifyProgressLastPlaying =
+            playing;
+    }
+
+    let position =
+        bmoSpotifyProgressAnchorPositionMs;
+
+    if (
+        playing
+    ) {
+        position +=
+            now -
+            bmoSpotifyProgressAnchorTimeMs;
+    }
+
+    return Math.max(
+        0,
+        Math.min(
+            position,
+            duration
+        )
+    );
+}
+
+
+function createBMOSpotifyNowPlaying() {
+    if (
+        bmoSpotifyNowPlayingElement
+    ) {
+        return (
+            bmoSpotifyNowPlayingElement
+        );
+    }
+
+    const element =
+        document.createElement(
+            "div"
+        );
+
+    element.id =
+        "bmo-spotify-now-playing";
+
+    /*
+     * Still deliberately compact and bottom-left.
+     *
+     * pointer-events:none keeps it completely out of the way of
+     * BMO's hold-to-talk interaction.
+     */
+    Object.assign(
+        element.style,
+        {
+            position:
+                "fixed",
+
+            left:
+                "12px",
+
+            bottom:
+                "12px",
+
+            width:
+                "220px",
+
+            maxWidth:
+                "46vw",
+
+            padding:
+                "6px 8px",
+
+            borderRadius:
+                "14px",
+
+            background:
+                "rgba(0, 0, 0, 0.58)",
+
+            color:
+                "white",
+
+            fontFamily:
+                "sans-serif",
+
+            fontSize:
+                "11px",
+
+            fontWeight:
+                "600",
+
+            textAlign:
+                "left",
+
+            pointerEvents:
+                "none",
+
+            zIndex:
+                "9000",
+
+            opacity:
+                "0",
+
+            transition:
+                "opacity 180ms ease",
+
+            boxSizing:
+                "border-box",
+        }
+    );
+
+    const label =
+        document.createElement(
+            "div"
+        );
+
+    Object.assign(
+        label.style,
+        {
+            whiteSpace:
+                "nowrap",
+
+            overflow:
+                "hidden",
+
+            textOverflow:
+                "ellipsis",
+
+            textAlign:
+                "center",
+        }
+    );
+
+    const progressRow =
+        document.createElement(
+            "div"
+        );
+
+    Object.assign(
+        progressRow.style,
+        {
+            display:
+                "none",
+
+            alignItems:
+                "center",
+
+            gap:
+                "6px",
+
+            marginTop:
+                "4px",
+        }
+    );
+
+    const progressTrack =
+        document.createElement(
+            "div"
+        );
+
+    Object.assign(
+        progressTrack.style,
+        {
+            flex:
+                "1",
+
+            height:
+                "3px",
+
+            borderRadius:
+                "999px",
+
+            overflow:
+                "hidden",
+
+            background:
+                "rgba(255, 255, 255, 0.28)",
+        }
+    );
+
+    const progressFill =
+        document.createElement(
+            "div"
+        );
+
+    Object.assign(
+        progressFill.style,
+        {
+            width:
+                "0%",
+
+            height:
+                "100%",
+
+            borderRadius:
+                "999px",
+
+            background:
+                "currentColor",
+
+            transition:
+                "width 900ms linear",
+        }
+    );
+
+    const progressTime =
+        document.createElement(
+            "div"
+        );
+
+    Object.assign(
+        progressTime.style,
+        {
+            flexShrink:
+                "0",
+
+            fontSize:
+                "9px",
+
+            fontWeight:
+                "500",
+
+            opacity:
+                "0.82",
+
+            whiteSpace:
+                "nowrap",
+
+            fontVariantNumeric:
+                "tabular-nums",
+        }
+    );
+
+    progressTrack.appendChild(
+        progressFill
+    );
+
+    progressRow.appendChild(
+        progressTrack
+    );
+
+    progressRow.appendChild(
+        progressTime
+    );
+
+    element.appendChild(
+        label
+    );
+
+    element.appendChild(
+        progressRow
+    );
+
+    document.body.appendChild(
+        element
+    );
+
+    bmoSpotifyNowPlayingElement =
+        element;
+
+    bmoSpotifyNowPlayingLabelElement =
+        label;
+
+    bmoSpotifyProgressRowElement =
+        progressRow;
+
+    bmoSpotifyProgressFillElement =
+        progressFill;
+
+    bmoSpotifyProgressTimeElement =
+        progressTime;
+
+    return element;
+}
+
+
+function updateBMOSpotifyNowPlaying(
+    state
+) {
+    const element =
+        createBMOSpotifyNowPlaying();
+
+    if (
+        window.bmoSpotifyNowPlayingEnabled ===
+            false
+    ) {
+        element.style.opacity =
+            "0";
+
+        resetBMOSpotifyProgressAnchor();
+
+        return;
+    }
+
+    if (
+        !state ||
+        !state.available ||
+        !state.connected ||
+        !state.track
+    ) {
+        element.style.opacity =
+            "0";
+
+        resetBMOSpotifyProgressAnchor();
+
+        return;
+    }
+
+    const track =
+        String(
+            state.track ||
+            ""
+        ).trim();
+
+    const artist =
+        String(
+            state.artist ||
+            ""
+        ).trim();
+
+    const prefix =
+        state.playing
+            ? "♫"
+            : "⏸";
+
+    bmoSpotifyNowPlayingLabelElement.textContent =
+        artist
+            ? `${prefix} ${track} · ${artist}`
+            : `${prefix} ${track}`;
+
+    const duration =
+        Number(
+            state.durationMs
+        );
+
+    const position =
+        getBMOSpotifyDisplayPosition(
+            state
+        );
+
+    if (
+        position !==
+            null &&
+        Number.isFinite(
+            duration
+        ) &&
+        duration >
+            0
+    ) {
+        const progress =
+            Math.max(
+                0,
+                Math.min(
+                    100,
+                    (
+                        position /
+                        duration
+                    ) *
+                    100
+                )
+            );
+
+        bmoSpotifyProgressFillElement.style.width =
+            `${progress}%`;
+
+        bmoSpotifyProgressTimeElement.textContent =
+            `${formatBMOSpotifyTime(position)} / ` +
+            `${formatBMOSpotifyTime(duration)}`;
+
+        bmoSpotifyProgressRowElement.style.display =
+            "flex";
+
+    } else {
+        bmoSpotifyProgressRowElement.style.display =
+            "none";
+    }
+
+    element.style.opacity =
+        "1";
+}
+
+
+function canBMOSpotifyUseJammingFace() {
+    if (
+        isRecording ||
+        recordingStartPending ||
+        currentAudio ||
+        processingTimerEvent
+    ) {
+        return false;
+    }
+
+    /*
+     * Spotify may occupy only idle-ish faces.
+     *
+     * Do not override listening, thinking, speaking, errors,
+     * timers, camera expressions, or temporary emotional faces.
+     */
+    return (
+        bmoRenderer.state ===
+            "idle" ||
+        bmoRenderer.state ===
+            "jamming" ||
+        bmoRenderer.state ===
+            "daydream" ||
+        bmoRenderer.state ===
+            "bored" ||
+        bmoRenderer.state ===
+            "curious"
+    );
+}
+
+
+function applyBMOSpotifyMusicMode(
+    state
+) {
+    updateBMOSpotifyNowPlaying(
+        state
+    );
+
+    if (
+        !state ||
+        !state.available ||
+        !state.connected
+    ) {
+        if (
+            bmoRenderer.state ===
+                "jamming"
+        ) {
+            setFaceState(
+                "idle"
+            );
+
+            resetDaydreamTimer();
+        }
+
+        return;
+    }
+
+    if (
+        state.playing
+    ) {
+        if (
+            canBMOSpotifyUseJammingFace() &&
+            bmoRenderer.state !==
+                "jamming"
+        ) {
+            stopDaydream(
+                false
+            );
+
+            setFaceState(
+                "jamming"
+            );
+        }
+
+        return;
+    }
+
+    /*
+     * Pausing Spotify releases only the jamming face.
+     * If BMO is currently doing anything else, leave that alone.
+     */
+    if (
+        bmoRenderer.state ===
+            "jamming"
+    ) {
+        setFaceState(
+            "idle"
+        );
+
+        resetDaydreamTimer();
+    }
+}
+
+
+function refreshBMOSpotifyMusicMode() {
+    try {
+        const state =
+            readBMONativeSpotifyState();
+
+        applyBMOSpotifyMusicMode(
+            state
+        );
+
+    } catch (
+        error
+    ) {
+        console.debug(
+            "Spotify music mode refresh failed:",
+            error
+        );
+    }
+}
+
+
+function startBMOSpotifyMusicMode() {
+    if (
+        bmoSpotifyMusicModeTimer
+    ) {
+        clearInterval(
+            bmoSpotifyMusicModeTimer
+        );
+    }
+
+    refreshBMOSpotifyMusicMode();
+
+    bmoSpotifyMusicModeTimer =
+        setInterval(
+            refreshBMOSpotifyMusicMode,
+            BMO_SPOTIFY_MUSIC_MODE_INTERVAL_MS
+        );
+}
+
+
+startBMOSpotifyMusicMode();
+
+
+
+/* === BMO NOW PLAYING DEBUG TOGGLE === */
+
+const BMO_NOW_PLAYING_STORAGE_KEY =
+    "bmo-now-playing-enabled";
+
+window.bmoSpotifyNowPlayingEnabled =
+    localStorage.getItem(
+        BMO_NOW_PLAYING_STORAGE_KEY
+    ) !== "false";
+
+
+function updateBMONowPlayingToggleButton() {
+    const button =
+        document.getElementById(
+            "bmo-debug-now-playing-toggle"
+        );
+
+    if (!button) {
+        return;
+    }
+
+    button.textContent =
+        window.bmoSpotifyNowPlayingEnabled
+            ? "Now playing: ON"
+            : "Now playing: OFF";
+}
+
+
+function setBMONowPlayingEnabled(
+    enabled
+) {
+    window.bmoSpotifyNowPlayingEnabled =
+        Boolean(
+            enabled
+        );
+
+    localStorage.setItem(
+        BMO_NOW_PLAYING_STORAGE_KEY,
+        window.bmoSpotifyNowPlayingEnabled
+            ? "true"
+            : "false"
+    );
+
+    updateBMONowPlayingToggleButton();
+
+    if (
+        !window.bmoSpotifyNowPlayingEnabled &&
+        bmoSpotifyNowPlayingElement
+    ) {
+        bmoSpotifyNowPlayingElement.style.opacity =
+            "0";
+    } else {
+        refreshBMOSpotifyMusicMode();
+    }
+}
+
+
+function installBMONowPlayingDebugToggle() {
+    const buttons =
+        document.getElementById(
+            "bmo-debug-face-buttons"
+        );
+
+    if (!buttons) {
+        return false;
+    }
+
+    if (
+        document.getElementById(
+            "bmo-debug-now-playing-toggle"
+        )
+    ) {
+        return true;
+    }
+
+    const button =
+        document.createElement(
+            "button"
+        );
+
+    button.id =
+        "bmo-debug-now-playing-toggle";
+
+    button.type =
+        "button";
+
+    button.addEventListener(
+        "click",
+        (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+
+            setBMONowPlayingEnabled(
+                !window.bmoSpotifyNowPlayingEnabled
+            );
+        }
+    );
+
+    buttons.appendChild(
+        button
+    );
+
+    updateBMONowPlayingToggleButton();
+
+    return true;
+}
+
+
+if (
+    !installBMONowPlayingDebugToggle()
+) {
+    const observer =
+        new MutationObserver(
+            () => {
+                if (
+                    installBMONowPlayingDebugToggle()
+                ) {
+                    observer.disconnect();
+                }
+            }
+        );
+
+    observer.observe(
+        document.body,
+        {
+            childList: true,
+            subtree: true,
+        }
+    );
+
+    setTimeout(
+        () =>
+            observer.disconnect(),
+        15000
+    );
+}
+
