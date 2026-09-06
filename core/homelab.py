@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import platform
 import shutil
 import socket
@@ -7,8 +8,28 @@ import subprocess
 from dataclasses import dataclass
 from typing import Optional
 
+from dotenv import load_dotenv
+
+
+load_dotenv()
 
 SSH_TIMEOUT_SECONDS = 5
+
+HOMESERVER_SSH_HOST = (
+    os.environ.get(
+        "BMO_HOMELAB_HOMESERVER_HOST",
+        "",
+    ).strip()
+    or None
+)
+
+SPECTRE_SSH_HOST = (
+    os.environ.get(
+        "BMO_HOMELAB_SPECTRE_HOST",
+        "",
+    ).strip()
+    or None
+)
 
 
 @dataclass(frozen=True)
@@ -23,17 +44,17 @@ NODES = {
     "primary": Node(
         key="primary",
         name="primary",
-        ssh_host="homelab-primary.example",
+        ssh_host=HOMESERVER_SSH_HOST,
     ),
     "primary": Node(
         key="primary",
         name="primary",
-        ssh_host="primary",
+        ssh_host=HOMESERVER_SSH_HOST,
     ),
     "media": Node(
         key="media",
         name="Media",
-        ssh_host="media",
+        ssh_host=SPECTRE_SSH_HOST,
     ),
     "local": Node(
         key="local",

@@ -11,8 +11,8 @@ load_dotenv()
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # LLM Settings
-# To offload to your Linux server, change this to: "http://tailscale-host.example:11434/api/chat"
-# Make sure Ollama is running on the blackbox server and listening on 0.0.0.0
+# By default BMO uses a local Ollama server.
+# Advanced deployments can override this configuration separately.
 LLM_URL = "http://127.0.0.1:11434/api/chat"
 LLM_MODEL = "qwen2.5:7b"  # Primary local Ollama model
 FAST_LLM_MODEL = "qwen2.5:7b"  # Kept aligned with the primary model

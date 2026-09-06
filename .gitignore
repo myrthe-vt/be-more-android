@@ -72,3 +72,29 @@ calendar_selection.json
 
 # Runtime logs
 logs/
+
+# --- Private/local configuration ---
+.env.*
+!.env.example
+
+config.local.json
+config.local.yaml
+config.local.yml
+
+credentials.json
+credentials.*.json
+secrets.json
+secrets.*.json
+
+# Google Calendar credentials/tokens are intentionally local
+credentials.google-calendar.json
+token.google-calendar.json
+calendar_selection.json
+
+# --- Private keys / signing material ---
+*.jks
+*.keystore
+*.p12
+*.pfx
+*.pem
+*.key
