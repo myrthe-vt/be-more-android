@@ -1,4 +1,4 @@
-package com.sapphi.bmo
+﻿package com.sapphi.bmo
 
 import android.Manifest
 import android.content.BroadcastReceiver
@@ -11,7 +11,7 @@ import android.hardware.Camera
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
-import android.net.ConnectivityManager
+import android.net.ConnectivityManager 
 import android.os.BatteryManager
 import android.os.Bundle
 import android.os.Handler
@@ -47,6 +47,9 @@ import java.util.UUID
 import java.util.concurrent.TimeUnit
 import android.util.Log
 import android.media.AudioManager
+import com.spotify.android.appremote.api.ConnectionParams
+import com.spotify.android.appremote.api.Connector
+import com.spotify.android.appremote.api.SpotifyAppRemote
 
 
 class MainActivity : AppCompatActivity() {
@@ -55,6 +58,14 @@ class MainActivity : AppCompatActivity() {
 
         private const val WAKE_LOG =
             "BMO_WAKE"
+        private const val SPOTIFY_LOG =
+            "BMO_SPOTIFY"
+
+        private const val SPOTIFY_CLIENT_ID =
+            "0791743ce8d541c98ec7f6d5b8629485"
+
+        private const val SPOTIFY_REDIRECT_URI =
+            "https://com.sapphi.bmo/callback"
 
         private const val AUDIO_PERMISSION_REQUEST =
             1001
@@ -163,6 +174,15 @@ class MainActivity : AppCompatActivity() {
     private var wakeAudioRecord: AudioRecord? =
         null
 
+    // BMO_WAKE_AUDIO_EFFECTS_V2
+    private var wakeAcousticEchoCanceler:
+        android.media.audiofx.AcousticEchoCanceler? =
+        null
+
+    private var wakeNoiseSuppressor:
+        android.media.audiofx.NoiseSuppressor? =
+        null
+
     private var wakeAudioThread: Thread? =
         null
 
@@ -191,6 +211,57 @@ class MainActivity : AppCompatActivity() {
 
     private var wakeRearmRunnable: Runnable? =
         null
+    /*
+     * Spotify App Remote
+     */
+
+    private var spotifyAppRemote: SpotifyAppRemote? =
+        null
+
+    // BMO_SPOTIFY_LAST_STATE_OUTER_V1
+    // Updated by the live App Remote player-state subscription.
+    private var spotifyLastKnownPaused:
+        Boolean? =
+        null
+
+    @Volatile
+    private var spotifyConnectInProgress =
+        false
+
+    @Volatile
+    private var spotifyStateJson =
+        JSONObject()
+            .put(
+                "connected",
+                false
+            )
+            .put(
+                "playing",
+                false
+            )
+            .put(
+                "paused",
+                true
+            )
+            .put(
+                "track",
+                JSONObject.NULL
+            )
+            .put(
+                "artist",
+                JSONObject.NULL
+            )
+            .put(
+                "album",
+                JSONObject.NULL
+            )
+            .put(
+                "uri",
+                JSONObject.NULL
+            )
+            .toString()
+
+
 
 
     private val wakeHttpClient =
@@ -773,7 +844,7 @@ class MainActivity : AppCompatActivity() {
             <body>
                 <div>
                     <div class="face">
-                        • _ •
+                        â€¢ _ â€¢
                     </div>
 
                     <div class="message">
@@ -853,7 +924,7 @@ class MainActivity : AppCompatActivity() {
             <body>
                 <div>
                     <div class="face">
-                        • _ •
+                        â€¢ _ â€¢
                     </div>
 
                     <div class="message">
@@ -1164,7 +1235,7 @@ class MainActivity : AppCompatActivity() {
             )
             wakeAudioRecord =
                 AudioRecord(
-                    MediaRecorder.AudioSource.MIC,
+                    MediaRecorder.AudioSource.VOICE_RECOGNITION,
                     WAKE_SAMPLE_RATE,
                     AudioFormat.CHANNEL_IN_MONO,
                     AudioFormat.ENCODING_PCM_16BIT,
@@ -1190,6 +1261,108 @@ class MainActivity : AppCompatActivity() {
                 WAKE_LOG,
                 "AudioRecord initialized"
             )
+
+            
+            val wakeAudioSessionId =
+                wakeAudioRecord
+                    ?.audioSessionId
+
+            Log.i(
+                WAKE_LOG,
+                "Wake audio session ID: $wakeAudioSessionId"
+            )
+
+            Log.i(
+                WAKE_LOG,
+                "Acoustic echo cancellation available: " +
+                    android.media.audiofx.AcousticEchoCanceler.isAvailable()
+            )
+
+            if (
+                wakeAudioSessionId != null &&
+                android.media.audiofx.AcousticEchoCanceler.isAvailable()
+            ) {
+                try {
+                    wakeAcousticEchoCanceler =
+                        android.media.audiofx.AcousticEchoCanceler.create(
+                            wakeAudioSessionId
+                        )
+
+                    if (
+                        wakeAcousticEchoCanceler != null
+                    ) {
+                        wakeAcousticEchoCanceler
+                            ?.enabled =
+                            true
+
+                        Log.i(
+                            WAKE_LOG,
+                            "AEC created; enabled=" +
+                                wakeAcousticEchoCanceler?.enabled
+                        )
+                    } else {
+                        Log.w(
+                            WAKE_LOG,
+                            "AEC reported available but create() returned null"
+                        )
+                    }
+
+                } catch (
+                    exception: Exception
+                ) {
+                    Log.e(
+                        WAKE_LOG,
+                        "Failed to enable acoustic echo cancellation",
+                        exception
+                    )
+                }
+            }
+
+            Log.i(
+                WAKE_LOG,
+                "Noise suppression available: " +
+                    android.media.audiofx.NoiseSuppressor.isAvailable()
+            )
+
+            if (
+                wakeAudioSessionId != null &&
+                android.media.audiofx.NoiseSuppressor.isAvailable()
+            ) {
+                try {
+                    wakeNoiseSuppressor =
+                        android.media.audiofx.NoiseSuppressor.create(
+                            wakeAudioSessionId
+                        )
+
+                    if (
+                        wakeNoiseSuppressor != null
+                    ) {
+                        wakeNoiseSuppressor
+                            ?.enabled =
+                            true
+
+                        Log.i(
+                            WAKE_LOG,
+                            "Noise suppressor created; enabled=" +
+                                wakeNoiseSuppressor?.enabled
+                        )
+                    } else {
+                        Log.w(
+                            WAKE_LOG,
+                            "Noise suppression reported available but create() returned null"
+                        )
+                    }
+
+                } catch (
+                    exception: Exception
+                ) {
+                    Log.e(
+                        WAKE_LOG,
+                        "Failed to enable noise suppression",
+                        exception
+                    )
+                }
+            }
 
             wakeAudioRecord
                 ?.startRecording()
@@ -1402,6 +1575,26 @@ class MainActivity : AppCompatActivity() {
         stopWakeWordSystem()
 
         runOnUiThread {
+            // BMO_WAKE_EARLY_DUCK_V1
+            /*
+             * Automatic wake-word recording bypasses face.js startRecording(),
+             * so request media ducking here before command recording begins.
+             */
+            evaluateJavascript(
+                """
+                if (
+                    typeof beginVoiceInteractionDucking ===
+                    "function"
+                ) {
+                    beginVoiceInteractionDucking();
+                }
+                """.trimIndent()
+            )
+
+            Log.i(
+                "BMO_AUDIO",
+                "Requested early media duck after wake detection"
+            )
             val modelText =
                 JSONObject.quote(
                     model
@@ -1549,6 +1742,29 @@ class MainActivity : AppCompatActivity() {
             _: Exception
         ) {
         }
+
+        
+        try {
+            wakeAcousticEchoCanceler
+                ?.release()
+        } catch (
+            _: Exception
+        ) {
+        }
+
+        wakeAcousticEchoCanceler =
+            null
+
+        try {
+            wakeNoiseSuppressor
+                ?.release()
+        } catch (
+            _: Exception
+        ) {
+        }
+
+        wakeNoiseSuppressor =
+            null
 
         wakeAudioRecord =
             null
@@ -1784,8 +2000,971 @@ class MainActivity : AppCompatActivity() {
      * JavaScript bridge
      * =====================================================================
      */
+    /*
+     * =====================================================================
+     * Spotify App Remote
+     * =====================================================================
+     */
+    // BMO_SPOTIFY_FALLBACK_V1
+    //
+    // Disconnected is its own state. Do not preserve stale "playing"
+    // information after App Remote disappears.
+    //
+    // A play request made while disconnected can be retried once after
+    // a successful App Remote reconnection.
+    private var pendingSpotifyPlayUri: String? = null
+
+    private fun markSpotifyDisconnectedState() {
+        spotifyLastKnownPaused =
+            null
+
+        spotifyStateJson =
+            JSONObject()
+                .put(
+                    "connected",
+                    false
+                )
+                .put(
+                    "playing",
+                    false
+                )
+                .put(
+                    "paused",
+                    false
+                )
+                .put(
+                    "track",
+                    JSONObject.NULL
+                )
+                .put(
+                    "artist",
+                    JSONObject.NULL
+                )
+                .put(
+                    "album",
+                    JSONObject.NULL
+                )
+                .put(
+                    "uri",
+                    JSONObject.NULL
+                )                // BMO_SPOTIFY_PROGRESS_V1
+                .put(
+                    "position_ms",
+                    JSONObject.NULL
+                )
+                .put(
+                    "duration_ms",
+                    JSONObject.NULL
+                )
+                .toString()
+
+        Log.i(
+            SPOTIFY_LOG,
+            "Spotify state marked disconnected"
+        )
+    }
+
+    private fun playSpotifyUri(
+        appRemote: SpotifyAppRemote,
+        uri: String
+    ) {
+        Log.i(
+            SPOTIFY_LOG,
+            "Play requested: $uri"
+        )
+
+        appRemote
+            .playerApi
+            .play(
+                uri
+            )
+            .setResultCallback {
+                Log.i(
+                    SPOTIFY_LOG,
+                    "Play command accepted: $uri"
+                )
+            }
+            .setErrorCallback { throwable ->
+                Log.e(
+                    SPOTIFY_LOG,
+                    "Play command failed: ${throwable.message}",
+                    throwable
+                )
+
+                notifyJavascriptSpotifyUnavailable()
+            }
+    }
+
+
+    private fun subscribeToSpotifyPlayerState(
+        appRemote: SpotifyAppRemote
+    ) {
+        Log.i(
+            SPOTIFY_LOG,
+            "Subscribing to Spotify player state"
+        )
+
+        appRemote
+            .playerApi
+            .subscribeToPlayerState()
+            .setEventCallback { playerState ->
+
+                val track =
+                    playerState.track
+
+                val playing =
+                    !playerState.isPaused
+
+                spotifyStateJson =
+                    JSONObject()
+                        .put(
+                            "connected",
+                            true
+                        )
+                        .put(
+                            "playing",
+                            playing
+                        )
+                        .put(
+                            "paused",
+                            playerState.isPaused
+                        )
+                        .put(
+                            "track",
+                            track.name
+                        )
+                        .put(
+                            "artist",
+                            track.artist.name
+                        )
+                        .put(
+                            "album",
+                            track.album.name
+                        )
+                        .put(
+                            "uri",
+                            track.uri
+                        )                        .put(
+                            "position_ms",
+                            playerState.playbackPosition
+                        )
+                        .put(
+                            "duration_ms",
+                            track.duration
+                        )
+                        .toString()
+
+                spotifyLastKnownPaused =
+                    playerState.isPaused
+                Log.i(
+                    SPOTIFY_LOG,
+                    "Player state: " +
+                            "${track.name} | " +
+                            "${track.artist.name} | " +
+                            "paused=${playerState.isPaused} | " +
+                            "${track.uri}"
+                )
+            }
+            .setErrorCallback { throwable ->
+                Log.e(
+                    SPOTIFY_LOG,
+                    "Player-state subscription failed: ${throwable.message}",
+                    throwable
+                )
+
+                spotifyAppRemote =
+                    null
+
+                spotifyConnectInProgress =
+                    false
+
+                markSpotifyDisconnectedState()
+            }
+    }
+
+
+    private fun connectSpotify() {
+        if (
+            spotifyAppRemote != null
+        ) {
+            Log.i(
+                SPOTIFY_LOG,
+                "Already connected"
+            )
+
+            return
+        }
+
+        if (
+            spotifyConnectInProgress
+        ) {
+            Log.i(
+                SPOTIFY_LOG,
+                "Connection already in progress"
+            )
+
+            return
+        }
+
+        val connectionParams =
+            ConnectionParams
+                .Builder(
+                    SPOTIFY_CLIENT_ID
+                )
+                .setRedirectUri(
+                    SPOTIFY_REDIRECT_URI
+                )
+                .showAuthView(
+                    true
+                )
+                .build()
+
+        spotifyConnectInProgress =
+            true
+
+        Log.i(
+            SPOTIFY_LOG,
+            "Connecting to Spotify App Remote"
+        )
+
+        SpotifyAppRemote.connect(
+            this,
+            connectionParams,
+            object :
+                Connector.ConnectionListener {
+
+                override fun onConnected(
+                    appRemote: SpotifyAppRemote
+                ) {
+                    spotifyConnectInProgress =
+                        false
+
+                    spotifyAppRemote =
+                        appRemote
+
+                    subscribeToSpotifyPlayerState(
+                        appRemote
+                    )
+
+                    Log.i(
+                        SPOTIFY_LOG,
+                        "Connected"
+                    )
+
+                    val pendingUri =
+                        pendingSpotifyPlayUri
+
+                    pendingSpotifyPlayUri =
+                        null
+
+                    if (
+                        pendingUri != null
+                    ) {
+                        Log.i(
+                            SPOTIFY_LOG,
+                            "Retrying pending play request after reconnect: $pendingUri"
+                        )
+
+                        playSpotifyUri(
+                            appRemote,
+                            pendingUri
+                        )
+                    }
+                }
+
+
+                override fun onFailure(
+                    throwable: Throwable
+                ) {
+                    spotifyConnectInProgress =
+                        false
+
+                    spotifyAppRemote =
+                        null
+
+                    pendingSpotifyPlayUri =
+                        null
+
+                    markSpotifyDisconnectedState()
+
+                    Log.e(
+                        SPOTIFY_LOG,
+                        "Connection failed: ${throwable.javaClass.simpleName}: ${throwable.message}",
+                        throwable
+                    )
+
+                    notifyJavascriptSpotifyUnavailable()
+                }
+            }
+        )
+    }
+
+
+    private fun disconnectSpotify() {
+        pendingSpotifyPlayUri =
+            null
+
+        markSpotifyDisconnectedState()
+
+        val appRemote =
+            spotifyAppRemote
+                ?: return
+
+        spotifyAppRemote =
+            null
+
+        spotifyConnectInProgress =
+            false
+
+        try {
+            SpotifyAppRemote.disconnect(
+                appRemote
+            )
+
+            Log.i(
+                SPOTIFY_LOG,
+                "Disconnected"
+            )
+
+        } catch (
+            exception: Exception
+        ) {
+            Log.e(
+                SPOTIFY_LOG,
+                "Disconnect failed",
+                exception
+            )
+        }
+    }
+
 
     inner class BMOBridge {
+        @JavascriptInterface
+        fun spotifyConnect() {
+            runOnUiThread {
+                connectSpotify()
+            }
+        }
+
+
+        @JavascriptInterface
+        fun spotifyDisconnect() {
+            runOnUiThread {
+                disconnectSpotify()
+            }
+
+        @JavascriptInterface
+        fun spotifyTestPlay() {
+            runOnUiThread {
+                val appRemote =
+                    spotifyAppRemote
+
+                if (
+                    appRemote == null
+                ) {
+                    Log.e(
+                        SPOTIFY_LOG,
+                        "Cannot play test track: Spotify is not connected"
+                    )
+
+                    connectSpotify()
+
+                    return@runOnUiThread
+                }
+            }
+        }
+        }
+
+
+    // BMO_VOICE_DUCKING_V1
+    //
+    // Android owns media-volume ducking because Android owns the speaker.
+    // The WebView only tells us when a voice interaction starts and ends.
+    //
+    // If the user manually changes media volume while BMO is ducking it,
+    // we deliberately do NOT restore the previous volume afterward.
+    private var voiceInteractionOriginalMusicVolume: Int? = null
+    private var voiceInteractionDuckedMusicVolume: Int? = null
+
+    // BMO_SPOTIFY_VOICE_RESUME_V1
+    //
+// Snapshot taken when a BMO voice interaction begins.
+    private var voiceInteractionSpotifyWasPlaying =
+        false
+
+    // True when BMO itself receives an explicit Spotify pause command.
+    private var voiceInteractionSpotifyExplicitPause =
+        false
+
+    @android.webkit.JavascriptInterface
+    fun beginVoiceInteraction() {
+        runOnUiThread {
+            if (voiceInteractionOriginalMusicVolume != null) {
+                android.util.Log.d(
+                    "BMO_AUDIO",
+                    "Voice interaction already ducked; ignoring duplicate begin"
+                )
+                return@runOnUiThread
+            }
+
+            voiceInteractionSpotifyWasPlaying =
+                spotifyAppRemote != null &&
+                    spotifyLastKnownPaused == false
+
+            voiceInteractionSpotifyExplicitPause =
+                false
+
+            Log.i(
+                "BMO_AUDIO",
+                "Spotify before voice interaction: " +
+                    "wasPlaying=$voiceInteractionSpotifyWasPlaying " +
+                    "lastKnownPaused=$spotifyLastKnownPaused"
+            )
+            val audioManager =
+                getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager
+
+            val stream = android.media.AudioManager.STREAM_MUSIC
+            val currentVolume = audioManager.getStreamVolume(stream)
+
+            val minimumVolume =
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.P) {
+                    audioManager.getStreamMinVolume(stream)
+                } else {
+                    0
+                }
+
+            val duckedVolume =
+                if (currentVolume <= minimumVolume) {
+                    currentVolume
+                } else {
+                    val calculated = (currentVolume * 0.25f).toInt()
+                    calculated.coerceIn(
+                        (minimumVolume + 1).coerceAtMost(currentVolume),
+                        currentVolume
+                    )
+                }
+
+            voiceInteractionOriginalMusicVolume = currentVolume
+            voiceInteractionDuckedMusicVolume = duckedVolume
+
+            if (duckedVolume != currentVolume) {
+                audioManager.setStreamVolume(
+                    stream,
+                    duckedVolume,
+                    0
+                )
+            }
+
+            android.util.Log.i(
+                "BMO_AUDIO",
+                "Voice interaction began: media volume $currentVolume -> $duckedVolume"
+            )
+        }
+    }
+
+        private fun finishSpotifyVoiceInteraction() {
+        val shouldResumeSpotify =
+            voiceInteractionSpotifyWasPlaying &&
+                !voiceInteractionSpotifyExplicitPause
+
+        Log.i(
+            "BMO_AUDIO",
+            "Spotify voice interaction ending: " +
+                "wasPlaying=$voiceInteractionSpotifyWasPlaying " +
+                "explicitPause=$voiceInteractionSpotifyExplicitPause " +
+                "lastKnownPaused=$spotifyLastKnownPaused " +
+                "shouldResume=$shouldResumeSpotify"
+        )
+
+        voiceInteractionSpotifyWasPlaying =
+            false
+
+        voiceInteractionSpotifyExplicitPause =
+            false
+
+        if (
+            !shouldResumeSpotify
+        ) {
+            return
+        }
+
+        /*
+         * Chromium may still own audio focus for a moment after its
+         * speech Audio element ends. Give Android time to return that
+         * focus before asking Spotify to resume.
+         */
+        mainHandler.postDelayed(
+            {
+                val appRemote =
+                    spotifyAppRemote
+
+                if (
+                    appRemote == null
+                ) {
+                    Log.i(
+                        "BMO_AUDIO",
+                        "Spotify not resumed after voice interaction: disconnected"
+                    )
+
+                    return@postDelayed
+                }
+
+                if (
+                    spotifyLastKnownPaused != true
+                ) {
+                    Log.i(
+                        "BMO_AUDIO",
+                        "Spotify resume not needed after voice interaction; " +
+                            "player is already playing"
+                    )
+
+                    return@postDelayed
+                }
+
+                Log.i(
+                    "BMO_AUDIO",
+                    "Resuming Spotify after BMO released audio focus"
+                )
+
+                try {
+                    appRemote
+                        .playerApi
+                        .resume()
+
+                } catch (
+                    exception: Exception
+                ) {
+                    Log.e(
+                        "BMO_AUDIO",
+                        "Could not resume Spotify after voice interaction",
+                        exception
+                    )
+                }
+            },
+            500L
+        )
+    }
+
+    // BMO_RESTORE_AFTER_LISTENING_V1
+    //
+    // Restore normal media volume after microphone capture finishes,
+    // but keep the overall voice interaction alive so Spotify's
+    // post-speech resume logic still runs later.
+    @android.webkit.JavascriptInterface
+    fun restoreVoiceInteractionVolume() {
+        runOnUiThread {
+            val originalVolume =
+                voiceInteractionOriginalMusicVolume
+                    ?: return@runOnUiThread
+
+            val duckedVolume =
+                voiceInteractionDuckedMusicVolume
+                    ?: return@runOnUiThread
+
+            val audioManager =
+                getSystemService(
+                    android.content.Context.AUDIO_SERVICE
+                ) as android.media.AudioManager
+
+            val stream =
+                android.media.AudioManager.STREAM_MUSIC
+
+            val currentVolume =
+                audioManager.getStreamVolume(
+                    stream
+                )
+
+            if (
+                currentVolume == duckedVolume
+            ) {
+                audioManager.setStreamVolume(
+                    stream,
+                    originalVolume,
+                    0
+                )
+
+                Log.i(
+                    "BMO_AUDIO",
+                    "Listening finished: media volume $currentVolume -> $originalVolume"
+                )
+            } else {
+                Log.i(
+                    "BMO_AUDIO",
+                    "Listening finished, but media volume changed manually; leaving it untouched"
+                )
+            }
+
+            /*
+             * Deliberately do NOT clear the saved interaction state.
+             * endVoiceInteraction() still needs it later for Spotify
+             * pause/resume handling.
+             */
+        }
+    }
+
+@android.webkit.JavascriptInterface
+    fun endVoiceInteraction() {
+        runOnUiThread {
+            val originalVolume = voiceInteractionOriginalMusicVolume
+                ?: run {
+                    android.util.Log.d(
+                        "BMO_AUDIO",
+                        "Voice interaction was not ducked; ignoring end"
+                    )
+                    return@runOnUiThread
+                }
+
+            val duckedVolume = voiceInteractionDuckedMusicVolume
+
+            val audioManager =
+                getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager
+
+            val stream = android.media.AudioManager.STREAM_MUSIC
+            val currentVolume = audioManager.getStreamVolume(stream)
+
+            if (duckedVolume != null && currentVolume == duckedVolume) {
+                audioManager.setStreamVolume(
+                    stream,
+                    originalVolume,
+                    0
+                )
+
+                android.util.Log.i(
+                    "BMO_AUDIO",
+                    "Voice interaction ended: media volume $currentVolume -> $originalVolume"
+                )
+            } else {
+                android.util.Log.i(
+                    "BMO_AUDIO",
+                    "Media volume changed during interaction ($duckedVolume -> $currentVolume); " +
+                        "leaving user's current volume untouched"
+                )
+            }
+
+            finishSpotifyVoiceInteraction()
+            voiceInteractionOriginalMusicVolume = null
+            voiceInteractionDuckedMusicVolume = null
+        }
+    }
+        @JavascriptInterface
+        fun isSpotifyConnected(): Boolean {
+            return spotifyAppRemote != null
+        }
+        @JavascriptInterface
+        fun spotifyPlay(
+            uri: String
+        ) {
+            runOnUiThread {
+                val appRemote =
+                    spotifyAppRemote
+
+                if (
+                    appRemote == null
+                ) {
+                    Log.i(
+                        SPOTIFY_LOG,
+                        "Play requested while Spotify is disconnected; reconnecting"
+                    )
+
+                    pendingSpotifyPlayUri =
+                        uri
+
+                    markSpotifyDisconnectedState()
+
+                    connectSpotify()
+
+                    return@runOnUiThread
+                }
+
+                playSpotifyUri(
+                    appRemote,
+                    uri
+                )
+            }
+        }
+
+
+        // BMO_SPOTIFY_POLISH_V1
+        @JavascriptInterface
+        fun spotifySetShuffle(
+            enabled: Boolean
+        ) {
+            runOnUiThread {
+                val appRemote =
+                    spotifyAppRemote
+
+                if (
+                    appRemote == null
+                ) {
+                    Log.e(
+                        SPOTIFY_LOG,
+                        "Shuffle requested while Spotify is disconnected"
+                    )
+
+                    notifyJavascriptSpotifyUnavailable()
+
+                    return@runOnUiThread
+                }
+
+                Log.i(
+                    SPOTIFY_LOG,
+                    "Setting Spotify shuffle: $enabled"
+                )
+
+                appRemote
+                    .playerApi
+                    .setShuffle(
+                        enabled
+                    )
+                    .setResultCallback {
+                        Log.i(
+                            SPOTIFY_LOG,
+                            "Spotify shuffle set: $enabled"
+                        )
+                    }
+                    .setErrorCallback { throwable ->
+                        Log.e(
+                            SPOTIFY_LOG,
+                            "Spotify shuffle failed: ${throwable.message}",
+                            throwable
+                        )
+
+                        notifyJavascriptSpotifyUnavailable()
+                    }
+            }
+        }
+
+
+        @JavascriptInterface
+        fun spotifySetRepeat(
+            mode: String
+        ) {
+            runOnUiThread {
+                val appRemote =
+                    spotifyAppRemote
+
+                if (
+                    appRemote == null
+                ) {
+                    Log.e(
+                        SPOTIFY_LOG,
+                        "Repeat requested while Spotify is disconnected"
+                    )
+
+                    notifyJavascriptSpotifyUnavailable()
+
+                    return@runOnUiThread
+                }
+
+                val repeatMode =
+                    when (
+                        mode
+                            .trim()
+                            .lowercase()
+                    ) {
+                        "off" ->
+                            com.spotify.protocol.types.Repeat.OFF
+
+                        "one" ->
+                            com.spotify.protocol.types.Repeat.ONE
+
+                        else ->
+                            com.spotify.protocol.types.Repeat.ALL
+                    }
+
+                Log.i(
+                    SPOTIFY_LOG,
+                    "Setting Spotify repeat: $mode ($repeatMode)"
+                )
+
+                appRemote
+                    .playerApi
+                    .setRepeat(
+                        repeatMode
+                    )
+                    .setResultCallback {
+                        Log.i(
+                            SPOTIFY_LOG,
+                            "Spotify repeat set: $mode"
+                        )
+                    }
+                    .setErrorCallback { throwable ->
+                        Log.e(
+                            SPOTIFY_LOG,
+                            "Spotify repeat failed: ${throwable.message}",
+                            throwable
+                        )
+
+                        notifyJavascriptSpotifyUnavailable()
+                    }
+            }
+        }
+
+        @JavascriptInterface
+        fun spotifyPause() {
+            runOnUiThread {
+                if (
+                    voiceInteractionOriginalMusicVolume != null
+                ) {
+                    voiceInteractionSpotifyExplicitPause =
+                        true
+
+                    Log.i(
+                        "BMO_AUDIO",
+                        "Spotify pause marked explicit during voice interaction"
+                    )
+                }
+
+                val appRemote =
+                    spotifyAppRemote
+
+                if (
+                    appRemote == null
+                ) {
+                    Log.e(
+                        SPOTIFY_LOG,
+                        "Pause requested while Spotify is disconnected"
+                    )
+
+                    return@runOnUiThread
+                }
+
+                appRemote
+                    .playerApi
+                    .pause()
+                    .setResultCallback {
+                        Log.i(
+                            SPOTIFY_LOG,
+                            "Pause command accepted"
+                        )
+                    }
+                    .setErrorCallback { throwable ->
+                        Log.e(
+                            SPOTIFY_LOG,
+                            "Pause command failed: ${throwable.message}",
+                            throwable
+                        )
+                    }
+            }
+        }
+
+
+        @JavascriptInterface
+        fun spotifyResume() {
+            runOnUiThread {
+                val appRemote =
+                    spotifyAppRemote
+
+                if (
+                    appRemote == null
+                ) {
+                    Log.e(
+                        SPOTIFY_LOG,
+                        "Resume requested while Spotify is disconnected"
+                    )
+
+                    return@runOnUiThread
+                }
+
+                appRemote
+                    .playerApi
+                    .resume()
+                    .setResultCallback {
+                        Log.i(
+                            SPOTIFY_LOG,
+                            "Resume command accepted"
+                        )
+                    }
+                    .setErrorCallback { throwable ->
+                        Log.e(
+                            SPOTIFY_LOG,
+                            "Resume command failed: ${throwable.message}",
+                            throwable
+                        )
+                    }
+            }
+        }
+
+
+        @JavascriptInterface
+        fun spotifyNext() {
+            runOnUiThread {
+                val appRemote =
+                    spotifyAppRemote
+
+                if (
+                    appRemote == null
+                ) {
+                    Log.e(
+                        SPOTIFY_LOG,
+                        "Next requested while Spotify is disconnected"
+                    )
+
+                    return@runOnUiThread
+                }
+
+                appRemote
+                    .playerApi
+                    .skipNext()
+                    .setResultCallback {
+                        Log.i(
+                            SPOTIFY_LOG,
+                            "Next command accepted"
+                        )
+                    }
+                    .setErrorCallback { throwable ->
+                        Log.e(
+                            SPOTIFY_LOG,
+                            "Next command failed: ${throwable.message}",
+                            throwable
+                        )
+                    }
+            }
+        }
+
+
+        @JavascriptInterface
+        fun spotifyPrevious() {
+            runOnUiThread {
+                val appRemote =
+                    spotifyAppRemote
+
+                if (
+                    appRemote == null
+                ) {
+                    Log.e(
+                        SPOTIFY_LOG,
+                        "Previous requested while Spotify is disconnected"
+                    )
+
+                    return@runOnUiThread
+                }
+
+                appRemote
+                    .playerApi
+                    .skipPrevious()
+                    .setResultCallback {
+                        Log.i(
+                            SPOTIFY_LOG,
+                            "Previous command accepted"
+                        )
+                    }
+                    .setErrorCallback { throwable ->
+                        Log.e(
+                            SPOTIFY_LOG,
+                            "Previous command failed: ${throwable.message}",
+                            throwable
+                        )
+                    }
+            }
+        }
+        @JavascriptInterface
+        fun getSpotifyState(): String {
+            return spotifyStateJson
+        }
+
+
+
 
         @JavascriptInterface
         fun startRecording() {
@@ -2949,6 +4128,25 @@ class MainActivity : AppCompatActivity() {
         )
     }
 
+    // BMO_SPOTIFY_UNAVAILABLE_CALLBACK_V1
+    private fun notifyJavascriptSpotifyUnavailable() {
+        Log.i(
+            SPOTIFY_LOG,
+            "Notifying WebView that Spotify is unavailable"
+        )
+
+        evaluateJavascript(
+            """
+            if (
+                window.onSpotifyUnavailable
+            ) {
+                window.onSpotifyUnavailable();
+            }
+            """.trimIndent()
+        )
+    }
+
+
     private fun evaluateJavascript(
         javascript: String
     ) {
@@ -3169,6 +4367,8 @@ class MainActivity : AppCompatActivity() {
     override fun onStart() {
         super.onStart()
 
+        connectSpotify()
+
         @Suppress(
             "DEPRECATION"
         )
@@ -3213,6 +4413,8 @@ class MainActivity : AppCompatActivity() {
             _: Exception
         ) {
         }
+
+        disconnectSpotify()
 
         super.onStop()
     }
@@ -3295,3 +4497,21 @@ class MainActivity : AppCompatActivity() {
         super.onDestroy()
     }
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
