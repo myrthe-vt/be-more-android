@@ -1,4 +1,4 @@
-﻿package com.sapphi.bmo
+package com.sapphi.bmo
 
 import android.Manifest
 import android.content.BroadcastReceiver
@@ -1129,7 +1129,7 @@ showingBmoPage =
             <body>
                 <div>
                     <div class="face">
-                        â€¢ _ â€¢
+                        ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¢ _ ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¢
                     </div>
 
                     <div class="message">
@@ -1209,7 +1209,7 @@ showingBmoPage =
             <body>
                 <div>
                     <div class="face">
-                        â€¢ _ â€¢
+                        ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¢ _ ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â¢
                     </div>
 
                     <div class="message">
@@ -2299,6 +2299,103 @@ showingBmoPage =
     // a successful App Remote reconnection.
     private var pendingSpotifyPlayUri: String? = null
 
+    /*
+     * One-shot Spotify command retry.
+     * Only one command is retained; the newest request wins.
+     */
+    private var pendingSpotifyCommand: String? =
+        null
+
+    private var pendingSpotifyCommandArgument: String? =
+        null
+
+    /*
+     * BMO_SPOTIFY_STALE_REMOTE_RECOVERY_V1
+     *
+     * A retained SpotifyAppRemote may become stale after a long idle
+     * period. Validate the actual SDK connection state before use.
+     */
+    private fun getConnectedSpotifyRemote():
+        SpotifyAppRemote? {
+
+        val appRemote =
+            spotifyAppRemote
+                ?: return null
+
+        if (
+            appRemote.isConnected()
+        ) {
+            return appRemote
+        }
+
+        Log.w(
+            SPOTIFY_LOG,
+            "Spotify App Remote is stale; reconnect required"
+        )
+
+        spotifyAppRemote =
+            null
+
+        spotifyConnectInProgress =
+            false
+
+        markSpotifyDisconnectedState()
+
+        try {
+            SpotifyAppRemote.disconnect(
+                appRemote
+            )
+        } catch (
+            exception: Exception
+        ) {
+            Log.d(
+                SPOTIFY_LOG,
+                "Stale Spotify disconnect failed: ${exception.message}"
+            )
+        }
+
+        return null
+    }
+
+    private fun markSpotifyRemoteFailed(
+        reason: String,
+        throwable: Throwable
+    ) {
+        Log.w(
+            SPOTIFY_LOG,
+            "Spotify App Remote invalidated: $reason",
+            throwable
+        )
+
+        val appRemote =
+            spotifyAppRemote
+
+        spotifyAppRemote =
+            null
+
+        spotifyConnectInProgress =
+            false
+
+        markSpotifyDisconnectedState()
+
+        if (
+            appRemote != null
+        ) {
+            try {
+                SpotifyAppRemote.disconnect(
+                    appRemote
+                )
+            } catch (
+                exception: Exception
+            ) {
+                Log.d(
+                    SPOTIFY_LOG,
+                    "Failed to disconnect invalid Spotify remote: ${exception.message}"
+                )
+            }
+        }
+    }
+
     private fun markSpotifyDisconnectedState() {
         spotifyLastKnownPaused =
             null
@@ -2470,7 +2567,7 @@ showingBmoPage =
 
     private fun connectSpotify() {
         if (
-            spotifyAppRemote != null
+            getConnectedSpotifyRemote() != null
         ) {
             Log.i(
                 SPOTIFY_LOG,
@@ -2555,6 +2652,185 @@ showingBmoPage =
                             pendingUri
                         )
                     }
+
+                    val pendingCommand =
+                        pendingSpotifyCommand
+
+                    val pendingArgument =
+                        pendingSpotifyCommandArgument
+
+                    /*
+                     * Clear before execution so a retry failure cannot
+                     * create an automatic reconnect loop.
+                     */
+                    pendingSpotifyCommand =
+                        null
+
+                    pendingSpotifyCommandArgument =
+                        null
+
+                    if (
+                        pendingCommand != null
+                    ) {
+                        Log.i(
+                            SPOTIFY_LOG,
+                            "Executing pending Spotify command after reconnect: $pendingCommand"
+                        )
+
+                        when (
+                            pendingCommand
+                        ) {
+                            "pause" ->
+                                appRemote
+                                    .playerApi
+                                    .pause()
+                                    .setResultCallback {
+                                        Log.i(
+                                            SPOTIFY_LOG,
+                                            "Pending pause command accepted"
+                                        )
+                                    }
+                                    .setErrorCallback { throwable ->
+                                        Log.e(
+                                            SPOTIFY_LOG,
+                                            "Pending pause command failed: ${throwable.message}",
+                                            throwable
+                                        )
+
+                                        notifyJavascriptSpotifyUnavailable()
+                                    }
+
+                            "resume" ->
+                                appRemote
+                                    .playerApi
+                                    .resume()
+                                    .setResultCallback {
+                                        Log.i(
+                                            SPOTIFY_LOG,
+                                            "Pending resume command accepted"
+                                        )
+                                    }
+                                    .setErrorCallback { throwable ->
+                                        Log.e(
+                                            SPOTIFY_LOG,
+                                            "Pending resume command failed: ${throwable.message}",
+                                            throwable
+                                        )
+
+                                        notifyJavascriptSpotifyUnavailable()
+                                    }
+
+                            "next" ->
+                                appRemote
+                                    .playerApi
+                                    .skipNext()
+                                    .setResultCallback {
+                                        Log.i(
+                                            SPOTIFY_LOG,
+                                            "Pending next command accepted"
+                                        )
+                                    }
+                                    .setErrorCallback { throwable ->
+                                        Log.e(
+                                            SPOTIFY_LOG,
+                                            "Pending next command failed: ${throwable.message}",
+                                            throwable
+                                        )
+
+                                        notifyJavascriptSpotifyUnavailable()
+                                    }
+
+                            "previous" ->
+                                appRemote
+                                    .playerApi
+                                    .skipPrevious()
+                                    .setResultCallback {
+                                        Log.i(
+                                            SPOTIFY_LOG,
+                                            "Pending previous command accepted"
+                                        )
+                                    }
+                                    .setErrorCallback { throwable ->
+                                        Log.e(
+                                            SPOTIFY_LOG,
+                                            "Pending previous command failed: ${throwable.message}",
+                                            throwable
+                                        )
+
+                                        notifyJavascriptSpotifyUnavailable()
+                                    }
+
+                            "shuffle" -> {
+                                val enabled =
+                                    pendingArgument
+                                        ?.toBooleanStrictOrNull()
+
+                                if (
+                                    enabled != null
+                                ) {
+                                    appRemote
+                                        .playerApi
+                                        .setShuffle(
+                                            enabled
+                                        )
+                                        .setResultCallback {
+                                            Log.i(
+                                                SPOTIFY_LOG,
+                                                "Pending Spotify shuffle set: $enabled"
+                                            )
+                                        }
+                                        .setErrorCallback { throwable ->
+                                            Log.e(
+                                                SPOTIFY_LOG,
+                                                "Pending Spotify shuffle failed: ${throwable.message}",
+                                                throwable
+                                            )
+
+                                            notifyJavascriptSpotifyUnavailable()
+                                        }
+                                }
+                            }
+
+                            "repeat" -> {
+                                val repeatMode =
+                                    when (
+                                        pendingArgument
+                                            ?.trim()
+                                            ?.lowercase()
+                                    ) {
+                                        "off" ->
+                                            com.spotify.protocol.types.Repeat.OFF
+
+                                        "one" ->
+                                            com.spotify.protocol.types.Repeat.ONE
+
+                                        else ->
+                                            com.spotify.protocol.types.Repeat.ALL
+                                    }
+
+                                appRemote
+                                    .playerApi
+                                    .setRepeat(
+                                        repeatMode
+                                    )
+                                    .setResultCallback {
+                                        Log.i(
+                                            SPOTIFY_LOG,
+                                            "Pending Spotify repeat set: $pendingArgument"
+                                        )
+                                    }
+                                    .setErrorCallback { throwable ->
+                                        Log.e(
+                                            SPOTIFY_LOG,
+                                            "Pending Spotify repeat failed: ${throwable.message}",
+                                            throwable
+                                        )
+
+                                        notifyJavascriptSpotifyUnavailable()
+                                    }
+                            }
+                        }
+                    }
                 }
 
 
@@ -2568,6 +2844,12 @@ showingBmoPage =
                         null
 
                     pendingSpotifyPlayUri =
+                        null
+
+                    pendingSpotifyCommand =
+                        null
+
+                    pendingSpotifyCommandArgument =
                         null
 
                     markSpotifyDisconnectedState()
@@ -2587,6 +2869,12 @@ showingBmoPage =
 
     private fun disconnectSpotify() {
         pendingSpotifyPlayUri =
+            null
+
+        pendingSpotifyCommand =
+            null
+
+        pendingSpotifyCommandArgument =
             null
 
         markSpotifyDisconnectedState()
@@ -2951,7 +3239,7 @@ showingBmoPage =
     }
         @JavascriptInterface
         fun isSpotifyConnected(): Boolean {
-            return spotifyAppRemote != null
+            return getConnectedSpotifyRemote() != null
         }
         @JavascriptInterface
         fun spotifyPlay(
@@ -2959,7 +3247,7 @@ showingBmoPage =
         ) {
             runOnUiThread {
                 val appRemote =
-                    spotifyAppRemote
+                    getConnectedSpotifyRemote()
 
                 if (
                     appRemote == null
@@ -2994,17 +3282,23 @@ showingBmoPage =
         ) {
             runOnUiThread {
                 val appRemote =
-                    spotifyAppRemote
+                    getConnectedSpotifyRemote()
 
                 if (
                     appRemote == null
                 ) {
                     Log.e(
                         SPOTIFY_LOG,
-                        "Shuffle requested while Spotify is disconnected"
+                        "Shuffle requested while Spotify is disconnected; reconnecting"
                     )
 
-                    notifyJavascriptSpotifyUnavailable()
+                    pendingSpotifyCommand =
+                        "shuffle"
+
+                    pendingSpotifyCommandArgument =
+                        enabled.toString()
+
+                    connectSpotify()
 
                     return@runOnUiThread
                 }
@@ -3032,7 +3326,18 @@ showingBmoPage =
                             throwable
                         )
 
-                        notifyJavascriptSpotifyUnavailable()
+                        pendingSpotifyCommand =
+                            "shuffle"
+
+                        pendingSpotifyCommandArgument =
+                            enabled.toString()
+
+                        markSpotifyRemoteFailed(
+                            "shuffle command failed",
+                            throwable
+                        )
+
+                        connectSpotify()
                     }
             }
         }
@@ -3044,17 +3349,23 @@ showingBmoPage =
         ) {
             runOnUiThread {
                 val appRemote =
-                    spotifyAppRemote
+                    getConnectedSpotifyRemote()
 
                 if (
                     appRemote == null
                 ) {
                     Log.e(
                         SPOTIFY_LOG,
-                        "Repeat requested while Spotify is disconnected"
+                        "Repeat requested while Spotify is disconnected; reconnecting"
                     )
 
-                    notifyJavascriptSpotifyUnavailable()
+                    pendingSpotifyCommand =
+                        "repeat"
+
+                    pendingSpotifyCommandArgument =
+                        mode
+
+                    connectSpotify()
 
                     return@runOnUiThread
                 }
@@ -3098,7 +3409,18 @@ showingBmoPage =
                             throwable
                         )
 
-                        notifyJavascriptSpotifyUnavailable()
+                        pendingSpotifyCommand =
+                            "repeat"
+
+                        pendingSpotifyCommandArgument =
+                            mode
+
+                        markSpotifyRemoteFailed(
+                            "repeat command failed",
+                            throwable
+                        )
+
+                        connectSpotify()
                     }
             }
         }
@@ -3119,15 +3441,23 @@ showingBmoPage =
                 }
 
                 val appRemote =
-                    spotifyAppRemote
+                    getConnectedSpotifyRemote()
 
                 if (
                     appRemote == null
                 ) {
                     Log.e(
                         SPOTIFY_LOG,
-                        "Pause requested while Spotify is disconnected"
+                        "Pause requested while Spotify is disconnected; reconnecting"
                     )
+
+                    pendingSpotifyCommand =
+                        "pause"
+
+                    pendingSpotifyCommandArgument =
+                        null
+
+                    connectSpotify()
 
                     return@runOnUiThread
                 }
@@ -3147,6 +3477,19 @@ showingBmoPage =
                             "Pause command failed: ${throwable.message}",
                             throwable
                         )
+
+                        pendingSpotifyCommand =
+                            "pause"
+
+                        pendingSpotifyCommandArgument =
+                            null
+
+                        markSpotifyRemoteFailed(
+                            "pause command failed",
+                            throwable
+                        )
+
+                        connectSpotify()
                     }
             }
         }
@@ -3156,15 +3499,23 @@ showingBmoPage =
         fun spotifyResume() {
             runOnUiThread {
                 val appRemote =
-                    spotifyAppRemote
+                    getConnectedSpotifyRemote()
 
                 if (
                     appRemote == null
                 ) {
                     Log.e(
                         SPOTIFY_LOG,
-                        "Resume requested while Spotify is disconnected"
+                        "Resume requested while Spotify is disconnected; reconnecting"
                     )
+
+                    pendingSpotifyCommand =
+                        "resume"
+
+                    pendingSpotifyCommandArgument =
+                        null
+
+                    connectSpotify()
 
                     return@runOnUiThread
                 }
@@ -3184,6 +3535,19 @@ showingBmoPage =
                             "Resume command failed: ${throwable.message}",
                             throwable
                         )
+
+                        pendingSpotifyCommand =
+                            "resume"
+
+                        pendingSpotifyCommandArgument =
+                            null
+
+                        markSpotifyRemoteFailed(
+                            "resume command failed",
+                            throwable
+                        )
+
+                        connectSpotify()
                     }
             }
         }
@@ -3193,15 +3557,23 @@ showingBmoPage =
         fun spotifyNext() {
             runOnUiThread {
                 val appRemote =
-                    spotifyAppRemote
+                    getConnectedSpotifyRemote()
 
                 if (
                     appRemote == null
                 ) {
                     Log.e(
                         SPOTIFY_LOG,
-                        "Next requested while Spotify is disconnected"
+                        "Next requested while Spotify is disconnected; reconnecting"
                     )
+
+                    pendingSpotifyCommand =
+                        "next"
+
+                    pendingSpotifyCommandArgument =
+                        null
+
+                    connectSpotify()
 
                     return@runOnUiThread
                 }
@@ -3221,6 +3593,19 @@ showingBmoPage =
                             "Next command failed: ${throwable.message}",
                             throwable
                         )
+
+                        pendingSpotifyCommand =
+                            "next"
+
+                        pendingSpotifyCommandArgument =
+                            null
+
+                        markSpotifyRemoteFailed(
+                            "next command failed",
+                            throwable
+                        )
+
+                        connectSpotify()
                     }
             }
         }
@@ -3230,15 +3615,23 @@ showingBmoPage =
         fun spotifyPrevious() {
             runOnUiThread {
                 val appRemote =
-                    spotifyAppRemote
+                    getConnectedSpotifyRemote()
 
                 if (
                     appRemote == null
                 ) {
                     Log.e(
                         SPOTIFY_LOG,
-                        "Previous requested while Spotify is disconnected"
+                        "Previous requested while Spotify is disconnected; reconnecting"
                     )
+
+                    pendingSpotifyCommand =
+                        "previous"
+
+                    pendingSpotifyCommandArgument =
+                        null
+
+                    connectSpotify()
 
                     return@runOnUiThread
                 }
@@ -3258,6 +3651,19 @@ showingBmoPage =
                             "Previous command failed: ${throwable.message}",
                             throwable
                         )
+
+                        pendingSpotifyCommand =
+                            "previous"
+
+                        pendingSpotifyCommandArgument =
+                            null
+
+                        markSpotifyRemoteFailed(
+                            "previous command failed",
+                            throwable
+                        )
+
+                        connectSpotify()
                     }
             }
         }
@@ -4880,6 +5286,12 @@ showingBmoPage =
 
         hideSystemUI()
 
+        /*
+         * Spotify App Remote may become stale during a long idle period.
+         * connectSpotify() no-ops when the existing connection is healthy.
+         */
+        connectSpotify()
+
         checkBackendAndUpdateUi()
 
         if (
@@ -4952,33 +5364,3 @@ showingBmoPage =
         super.onDestroy()
     }
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
