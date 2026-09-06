@@ -194,6 +194,38 @@ calendar_selection.json
 
 ---
 
+### Optional services & failure behavior
+
+BMO's core local chat interface does not require every integration to be configured. Optional services fail independently so one missing service does not prevent the backend from starting.
+
+| Service | What it enables | Local configuration | If unavailable |
+|---|---|---|---|
+| **Spotify Web API** | Track, artist, and album lookup before Android playback | `SPOTIFY_CLIENT_ID` and `SPOTIFY_CLIENT_SECRET` in `.env` | Spotify catalog requests fail cleanly; the rest of BMO remains available |
+| **Google Calendar** | Read-only calendar questions such as today, tomorrow, afternoon, and next event | `credentials.google-calendar.json`, local OAuth token, and optional `calendar_selection.json` | BMO reports that the calendar is not connected |
+| **Weather** | Current weather and short forecasts through Open-Meteo | No API key required; outbound internet access is needed | BMO reports that weather cannot be checked |
+| **Vision** | Camera-image understanding | Local Ollama with `moondream:latest` | Vision reports that BMO's eyes are unavailable; other features continue working |
+| **Homelab diagnostics** | Read-only checks of configured hosts and services | Optional `BMO_HOMELAB_PRIMARY_HOST` and `BMO_HOMELAB_MEDIA_HOST` values | Leave the values blank to disable remote checks safely |
+
+Google Calendar uses the `calendar.readonly` OAuth scope. Calendar access is performed by the Mac backend, not by an Android calendar permission.
+
+### Android permissions
+
+The Android body requests only the platform permissions needed for its hardware-facing features:
+
+| Permission | Why BMO uses it |
+|---|---|
+| `RECORD_AUDIO` | Wake-word detection and spoken command recording |
+| `CAMERA` | Still-image capture for explicit vision requests |
+| `INTERNET` | Communication with the Mac backend and network-backed integrations |
+| `ACCESS_NETWORK_STATE` | Detecting connectivity changes and recovering the backend connection |
+| `RECEIVE_BOOT_COMPLETED` | Restoring BMO's Android-side behavior after the phone reboots |
+
+Spotify playback uses Spotify App Remote on Android and the optional Spotify Web API on the Mac. It does not require a separate Android runtime permission. Google Calendar likewise runs through the Mac backend rather than an Android calendar permission.
+
+Microphone and camera access remain local to the Android body until BMO needs to send recorded audio or an explicitly captured image to the configured backend.
+
+The Android client supports local HTTP backends. HTTP traffic is not encrypted, so use HTTPS or a trusted private network such as a Tailnet when traffic could cross an untrusted network.
+
 ## 📂 Project structure
 
 ```text

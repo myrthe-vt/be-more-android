@@ -754,7 +754,7 @@ def get_spotify_catalog_request(
         return None
 
     text = text.strip(
-        " \\t\\r\\n"
+        " \t\r\n"
         "\"'“”‘’"
     )
 
@@ -843,7 +843,7 @@ def get_spotify_track_query(
         return None
 
     text = text.strip(
-        " \\t\\r\\n"
+        " \t\r\n"
         "\"'“”‘’"
     )
 
@@ -1930,70 +1930,165 @@ def get_calendar_intent(text):
     if not normalized:
         return None
 
-    # Highly specific calendar/time questions should be recognized
-    # before the generic calendar-keyword gate.
-    if (
-        "this afternoon" in normalized
-        or re.search(
-            r"\b(?:anything|something|plans?)\b.*\bafternoon\b",
+    calendar_context = bool(
+        re.search(
+            r"\b(?:"
+            r"calendar|schedule|event|events|"
+            r"appointment|appointments"
+            r")\b",
             normalized,
         )
+    )
+
+    query_like = bool(
+        re.match(
+            r"^(?:"
+            r"what|what's|when|is|are|do|does|"
+            r"can|could|would|will|"
+            r"check|show|tell|anything|something"
+            r")\b",
+            normalized,
+        )
+    )
+
+    # ---------------------------------------------------------
+    # Afternoon
+    # ---------------------------------------------------------
+
+    afternoon_patterns = (
+        r"anything this afternoon",
+        r"anything on this afternoon",
+        r"what do i have this afternoon",
+        r"what have i got this afternoon",
+        r"what am i doing this afternoon",
+        r"do i have anything this afternoon",
+        r"what(?:'s| is) on this afternoon",
+        r"plans this afternoon",
+    )
+
+    if any(
+        re.fullmatch(
+            pattern,
+            normalized,
+        )
+        for pattern in afternoon_patterns
     ):
         return "afternoon"
 
     if (
-        "next event" in normalized
-        or "next appointment" in normalized
-        or "next thing" in normalized
-        or "what's next" in normalized
-        or "what is next" in normalized
+        calendar_context
+        and query_like
+        and "afternoon" in normalized
+    ):
+        return "afternoon"
+
+    # ---------------------------------------------------------
+    # Next event
+    # ---------------------------------------------------------
+
+    if re.search(
+        r"\bnext\s+(?:event|appointment)\b",
+        normalized,
     ):
         return "next"
 
+    if (
+        calendar_context
+        and query_like
+        and re.search(
+            r"\bwhat(?:'s| is)\s+next\b",
+            normalized,
+        )
+    ):
+        return "next"
+
+    # ---------------------------------------------------------
+    # Tomorrow
+    # ---------------------------------------------------------
+
     tomorrow_patterns = (
-        "tomorrow",
-        "what do i have tomorrow",
-        "what have i got tomorrow",
-        "anything tomorrow",
-        "what am i doing tomorrow",
+        r"what do i have tomorrow",
+        r"what have i got tomorrow",
+        r"anything tomorrow",
+        r"what am i doing tomorrow",
+        r"do i have anything tomorrow",
+        r"what(?:'s| is) on tomorrow",
     )
 
     if any(
-        phrase in normalized
-        for phrase in tomorrow_patterns
+        re.fullmatch(
+            pattern,
+            normalized,
+        )
+        for pattern in tomorrow_patterns
     ):
         return "tomorrow"
 
+    if (
+        calendar_context
+        and query_like
+        and re.search(
+            r"\btomorrow\b",
+            normalized,
+        )
+    ):
+        return "tomorrow"
+
+    # ---------------------------------------------------------
+    # Today
+    # ---------------------------------------------------------
+
     today_patterns = (
-        "today",
-        "anything on today",
-        "anything today",
-        "what do i have today",
-        "what have i got today",
-        "what am i doing today",
+        r"what do i have today",
+        r"what have i got today",
+        r"anything today",
+        r"anything on today",
+        r"what am i doing today",
+        r"do i have anything today",
+        r"what(?:'s| is) on today",
     )
 
     if any(
-        phrase in normalized
-        for phrase in today_patterns
+        re.fullmatch(
+            pattern,
+            normalized,
+        )
+        for pattern in today_patterns
     ):
         return "today"
 
-    calendar_words = (
-        "calendar",
-        "schedule",
-        "event",
-        "events",
-        "appointment",
-        "appointments",
-        "what do i have",
-        "what have i got",
-        "anything on",
+    if (
+        calendar_context
+        and query_like
+        and re.search(
+            r"\btoday\b",
+            normalized,
+        )
+    ):
+        return "today"
+
+    # ---------------------------------------------------------
+    # Generic calendar query defaults to today.
+    # ---------------------------------------------------------
+
+    generic_patterns = (
+        r"what do i have",
+        r"what have i got",
+        r"anything on",
     )
 
     if any(
-        phrase in normalized
-        for phrase in calendar_words
+        re.fullmatch(
+            pattern,
+            normalized,
+        )
+        for pattern in generic_patterns
+    ):
+        return "today"
+
+    if (
+        calendar_context
+        and query_like
     ):
         return "today"
 
@@ -2034,18 +2129,12 @@ def get_weather_intent(text):
     if not normalized:
         return None
 
-    weather_words = (
-        "weather",
-        "forecast",
-        "rain",
-        "raining",
-        "umbrella",
-        "temperature",
-    )
-
-    if not any(
-        word in normalized
-        for word in weather_words
+    if not re.search(
+        r"\b(?:"
+        r"weather|forecast|rain|raining|"
+        r"umbrella|temperature"
+        r")\b",
+        normalized,
     ):
         return None
 
