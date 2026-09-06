@@ -25,6 +25,7 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import androidx.activity.OnBackPressedCallback
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
@@ -447,6 +448,25 @@ class MainActivity : AppCompatActivity() {
     ) {
         super.onCreate(
             savedInstanceState
+        )
+
+        /*
+         * BMO is an appliance-style interface.
+         * Ignore Back and immediately restore immersive mode.
+         *
+         * Use AndroidX's dispatcher instead of the deprecated
+         * Activity.onBackPressed() override so this also works with
+         * modern gesture/predictive-back handling.
+         */
+        onBackPressedDispatcher.addCallback(
+            this,
+            object : OnBackPressedCallback(
+                true
+            ) {
+                override fun handleOnBackPressed() {
+                    hideSystemUI()
+                }
+            }
         )
 
         Log.i(
@@ -5753,17 +5773,6 @@ showingBmoPage =
                     )
     }
 
-
-    @Suppress(
-        "DEPRECATION"
-    )
-    override fun onBackPressed() {
-        /*
-         * BMO is an appliance-style interface.
-         * Ignore Back and immediately restore immersive mode.
-         */
-        hideSystemUI()
-    }
 
 
     override fun onWindowFocusChanged(
