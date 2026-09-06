@@ -1,178 +1,610 @@
-# Be More Agent 🤖
-**A Customizable, Offline-First AI Agent for Raspberry Pi**
+# Be More Agent / BMO
 
-[![Watch the Demo](https://img.youtube.com/vi/l5ggH-YhuAw/maxresdefault.jpg)](https://youtu.be/l5ggH-YhuAw)
+An embodied BMO-inspired assistant built around hardware I already owned.
 
-![Python](https://img.shields.io/badge/Python-3.9%2B-blue) ![Platform](https://img.shields.io/badge/Platform-Raspberry%20Pi-red) ![License](https://img.shields.io/badge/License-MIT-green)
+This fork uses an **Android phone as BMO's body** and a **MacBook Pro as BMO's brain**. The Android device handles the physical interaction layer, while the Mac runs speech recognition, local AI, text-to-speech, integrations, diagnostics, and the main FastAPI backend.
 
-This project turns a Raspberry Pi into a fully functional, conversational AI agent. Unlike cloud-based assistants, this agent runs **100% locally** on your device. It listens for a wake word, processes speech, "thinks" using a local Large Language Model (LLM), and speaks back with a low-latency neural voice—all while displaying reactive face animations.
+The goal is not to make a generic chatbot with a BMO face. The goal is to make BMO feel like one coherent embodied character.
 
-**It is designed as a blank canvas:** You can easily swap the face images and sound effects to create your own character!
-
-## ✨ Features
-
-* **100% Local Intelligence**: Powered by **Ollama** (LLM) and **Whisper.cpp** (Speech-to-Text). No API fees, no cloud data usage.
-* **Open Source Wake Word**: Wakes up to your custom model using **OpenWakeWord** (Offline & Free). No access keys required.
-* **Hardware-Aware Audio**: Automatically detects your microphone's sample rate and resamples audio on the fly to prevent ALSA errors.
-* **Smart Web Search**: Uses DuckDuckGo to find real-time news and information when the LLM doesn't know the answer.
-* **Reactive Faces**: The GUI updates the character's face based on its state (Listening, Thinking, Speaking, Idle).
-* **Fast Text-to-Speech**: Uses **Piper TTS** for low-latency, high-quality voice generation on the Pi.
-* **Vision Capable**: Can "see" and describe the world using a connected camera and the **Moondream** vision model.
-
-## 🛠️ Hardware Requirements
-
-* **Raspberry Pi 5** (Recommended) or Pi 4 (4GB RAM minimum)
-* USB Microphone & Speaker
-* LCD Screen (DSI or HDMI)
-* Raspberry Pi Camera Module
+> This is an unofficial fan project. BMO, Adventure Time, and related properties belong to their respective rights holders.
 
 ---
 
-## 📂 Project Structure
+## Architecture
+
+### Android phone = body
+
+The current BMO body is an **LG G7 ThinQ**.
+
+It handles:
+
+- fullscreen BMO face
+- touch interaction
+- microphone access
+- speaker output
+- native Android wake-word detection
+- native command recording
+- native Spotify App Remote control
+- Android audio-state detection
+- camera access
+- developer/debug UI
+- WebView hosting the BMO interface
+
+The Android application package is:
 
 ```text
-be-more-agent/
-├── agent.py                   # The main brain script
-├── setup.sh                   # Auto-installer script
-├── wakeword.onnx              # OpenWakeWord model (The "Ear")
-├── config.json                # User settings (Models, Prompt, Hardware)
-├── chat_memory.json           # Conversation history
-├── requirements.txt           # Python dependencies
-├── whisper.cpp/               # Speech-to-Text engine
-├── piper/                     # Piper TTS engine & voice models
-├── sounds/                    # Sound effects folder
-│   ├── greeting_sounds/       # Startup .wav files
-│   ├── thinking_sounds/       # Looping .wav files
-│   ├── ack_sounds/            # "I heard you" .wav files
-│   └── error_sounds/          # Error/Confusion .wav files
-└── faces/                     # Face images folder
-    ├── idle/                  # .png sequence for idle state
-    ├── listening/             # .png sequence for listening
-    ├── thinking/              # .png sequence for thinking
-    ├── speaking/              # .png sequence for speaking
-    ├── error/                 # .png sequence for errors
-    └── warmup/                # .png sequence for startup
+com.sapphi.bmo
+```
+
+Current Android requirements:
+
+- Android 8 or newer
+- minSdk 26
+- landscape-oriented device
+
+### MacBook Pro = brain
+
+The current backend runs on a:
+
+```text
+2021 M1 Pro MacBook Pro
+16 GB RAM
+macOS
+```
+
+The Mac handles:
+
+- FastAPI backend
+- deterministic intent routing
+- local LLM inference through Ollama
+- whisper.cpp speech-to-text
+- Piper text-to-speech
+- custom BMO wake-word model
+- memory
+- timers and reminders
+- web search
+- Google Calendar
+- weather
+- Spotify Web API
+- homelab diagnostics
+- simple vision processing
+- logging and client-error collection
+
+The backend listens on:
+
+```text
+0.0.0.0:8000
+```
+
+The Android device normally reaches it over **Tailscale**.
+
+### WebView = presentation layer
+
+The web frontend handles:
+
+- BMO face animations
+- expressions
+- conversation transcripts
+- status text
+- audio playback
+- critter overlays
+- now-playing information
+- developer/debug interface
+
+Native Android functionality communicates with this presentation layer where appropriate.
+
+---
+
+## AI stack
+
+### Main text model
+
+BMO currently uses:
+
+```text
+qwen2.5:7b
+```
+
+through Ollama.
+
+### Vision model
+
+Simple vision uses:
+
+```text
+moondream:latest
+```
+
+through Ollama.
+
+### Speech-to-text
+
+Speech recognition uses:
+
+```text
+whisper.cpp
+ggml-base.en.bin
+```
+
+### Text-to-speech
+
+Speech output uses Piper with the custom BMO voice:
+
+```text
+piper/bmo.onnx
+piper/bmo.onnx.json
+```
+
+### Wake word
+
+The custom tracked wake-word model is:
+
+```text
+wakeword.onnx
 ```
 
 ---
 
-## 🚀 Installation
+# Mac installation
 
-### 1. Prerequisites
-Ensure your Raspberry Pi OS is up to date.
-```bash
-sudo apt update && sudo apt upgrade -y
-sudo apt install git -y
-```
+## Requirements
 
-### 2. Install Ollama
-This agent relies on [Ollama](https://ollama.com) to run the brain.
-```bash
-curl -fsSL https://ollama.com/install.sh| sh
-```
-*Pull the required models:*
-```bash
-ollama pull gemma:2b
-ollama pull moondream
-```
+The supported setup is macOS with Homebrew.
 
-### 3. Clone & Setup
+The installer checks or installs the required dependencies, including:
+
+- Python 3.13
+- PortAudio
+- CMake
+- Git
+- FFmpeg
+- wget
+- espeak-ng
+
+It also prepares:
+
+- Python virtual environment
+- Python dependencies
+- Piper
+- whisper.cpp
+- Whisper base.en model
+- Ollama models
+- required directories and links
+
+## First-time setup
+
+Clone the repository and enter it:
+
 ```bash
-git clone https://github.com/brenpoly/be-more-agent.git
+git clone <your-repository-url>
 cd be-more-agent
-chmod +x setup.sh
-./setup.sh
 ```
-*The setup script will install system libraries, create necessary folders, download Piper TTS, and set up the Python virtual environment.*
 
-### 4. Configure the Wake Word
-The setup script downloads a default wake word ("Hey Jarvis"). To use your own:
-1. Train a model at [OpenWakeWord](https://github.com/dscripka/openWakeWord).
-2. Place the `.onnx` file in the root folder.
-3. Rename it to `wakeword.onnx`.
+Then run:
 
-### 5. Run the Agent
+```bash
+chmod +x setup-mac.sh
+./setup-mac.sh
+```
+
+The setup script is designed to be safe to run again. Existing models and dependencies should not be unnecessarily downloaded again.
+
+The supported installer for this branch is **`setup-mac.sh`**.
+
+There is intentionally no generic `setup.sh`. The old Raspberry Pi installer was removed because it no longer represented this Mac + Android architecture.
+
+## Starting BMO
+
+For normal use:
+
+```bash
+cd ~/be-more-agent
+./start-bmo.sh
+```
+
+This starts the FastAPI application with Uvicorn:
+
+```text
+http://0.0.0.0:8000
+```
+
+Stop it with `Ctrl+C`.
+
+---
+
+# Optional services
+
+BMO can use several external or local services.
+
+The core assistant can still start when optional configuration is unavailable, although the corresponding features will not work.
+
+## Ollama
+
+Required for local LLM inference.
+
+Models currently used:
+
+```bash
+ollama pull qwen2.5:7b
+ollama pull moondream:latest
+```
+
+`setup-mac.sh` checks these automatically.
+
+## Google Calendar
+
+Calendar integration uses the Google Calendar API.
+
+Local credentials and tokens are intentionally excluded from Git.
+
+Ignored files include:
+
+```text
+credentials.google-calendar.json
+token.google-calendar.json
+calendar_selection.json
+```
+
+Do not commit personal Calendar credentials or tokens.
+
+## Spotify
+
+Spotify support is split between the Mac and Android layers.
+
+The Mac provides Spotify Web API functionality.
+
+The Android application uses Spotify App Remote for native playback control and player-state information.
+
+Supported controls include:
+
+- play
+- pause
+- resume
+- next
+- previous
+- currently playing metadata
+- playback progress
+
+BMO also uses Android's local audio state so its jamming expression only appears when music is actually audible on the device.
+
+Spotify configuration is stored outside Git.
+
+## Weather
+
+Weather support runs from the Mac backend.
+
+The diagnostics command can confirm whether it is available.
+
+## Vision
+
+Simple vision requests use:
+
+```text
+moondream:latest
+```
+
+through Ollama.
+
+The normal Mac vision path does **not** require OpenCV.
+
+Some optional compatibility code for other hardware remains in the project and is intentionally not part of the normal Mac dependency set.
+
+---
+
+# Android application
+
+The Android client currently lives in a separate repository.
+
+Example local path on Windows:
+
+```text
+C:\GitHub\be-more-android\android
+```
+
+Current Android configuration:
+
+```text
+namespace/applicationId: com.sapphi.bmo
+minSdk: 26
+targetSdk: 37
+compileSdk: 37
+versionCode: 1
+versionName: 1.0
+Java: 11
+```
+
+## Building the debug APK
+
+From PowerShell:
+
+```powershell
+cd C:\GitHub\be-more-android\android
+.\gradlew.bat assembleDebug
+```
+
+The Android app currently permits cleartext HTTP because the BMO backend is reached through Tailscale using HTTP.
+
+Do not disable cleartext traffic without also changing the backend transport.
+
+---
+
+# Networking
+
+The Mac and Android device are intended to communicate over **Tailscale**.
+
+Typical arrangement:
+
+```text
+LG G7 ThinQ
+    |
+    | Tailscale
+    |
+MacBook Pro
+FastAPI :8000
+```
+
+The Mac FastAPI server listens on all interfaces so the phone can reach it through the Mac's Tailscale address.
+
+Do not expose the BMO backend directly to the public internet without adding appropriate authentication and transport security.
+
+---
+
+# Diagnostics
+
+BMO includes built-in diagnostics for checking the supported Mac environment.
+
+Run:
+
+```bash
+cd ~/be-more-agent
+source venv/bin/activate
+python bmo_diagnostics.py
+```
+
+Diagnostics currently check:
+
+- backend / Ollama
+- Piper executable
+- Piper model
+- whisper.cpp executable
+- Whisper model
+- disk state
+- Calendar configuration
+- Spotify availability
+- weather availability
+- vision model
+- logging
+- latest backend error
+- latest frontend/native Android client error
+
+The backend also exposes:
+
+```text
+GET /api/diagnostics
+```
+
+---
+
+# Logging
+
+Runtime logs are stored under:
+
+```text
+logs/
+```
+
+The main rotating log is:
+
+```text
+logs/bmo.log
+```
+
+Rotation currently uses:
+
+```text
+5 MB per file
+3 backups
+```
+
+Frontend JavaScript errors, unhandled promise rejections, and selected Android client errors can also be forwarded to the Mac diagnostics system.
+
+Diagnostic reporting is designed not to interrupt normal BMO operation if logging itself fails.
+
+---
+
+# Local configuration and secrets
+
+The repository intentionally ignores local secrets, runtime data, downloaded models, and generated files.
+
+Examples include:
+
+```text
+.env
+.env.spotify
+credentials.google-calendar.json
+token.google-calendar.json
+calendar_selection.json
+logs/
+piper/
+whisper.cpp/
+venv/
+```
+
+The custom:
+
+```text
+wakeword.onnx
+```
+
+is tracked by Git.
+
+Never commit API secrets, OAuth credentials, personal Calendar information, private network addresses, or device-specific personal configuration.
+
+---
+
+# Important project files
+
+```text
+web_app.py
+core/config.py
+core/llm.py
+core/search.py
+core/stt.py
+core/tts.py
+core/calendar.py
+core/weather.py
+core/spotify.py
+core/diagnostics.py
+core/logging_setup.py
+bmo_diagnostics.py
+static/face.js
+requirements.txt
+setup-mac.sh
+start-bmo.sh
+```
+
+---
+
+# Troubleshooting
+
+## BMO will not start
+
+Run:
+
+```bash
+./setup-mac.sh
+```
+
+and then:
+
 ```bash
 source venv/bin/activate
-python agent.py
+python bmo_diagnostics.py
 ```
 
----
+Fix any failed required checks before starting BMO again.
 
-## 📂 Configuration (`config.json`)
+## Ollama is unavailable
 
-You can modify the hardware behavior and personality in `config.json`. The `agent.py` script creates this on the first run if it doesn't exist, but you can create it manually:
+Check:
 
-```json
-{
-    "text_model": "gemma3:1b",
-    "vision_model": "moondream",
-    "voice_model": "piper/en_GB-semaine-medium.onnx",
-    "chat_memory": true,
-    "camera_rotation": 0,
-    "system_prompt_extras": "You are a helpful robot assistant. Keep responses short and cute."
-}
+```bash
+ollama list
 ```
 
+BMO currently expects:
+
+```text
+qwen2.5:7b
+moondream:latest
+```
+
+A client/server Ollama version warning has been observed without affecting BMO operation.
+
+Treat it as a problem only if Ollama requests actually begin failing.
+
+## Android cannot reach BMO
+
+Check that:
+
+1. BMO is running on the Mac.
+2. The Mac and phone are connected to Tailscale.
+3. The Android client is configured to reach the correct Mac address.
+4. Port 8000 is reachable.
+5. `/api/status` responds successfully.
+
+## Speech recognition problems
+
+Confirm that these exist:
+
+```text
+whisper.cpp/build/bin/whisper-cli
+whisper.cpp/models/ggml-base.en.bin
+```
+
+Then run:
+
+```bash
+python bmo_diagnostics.py
+```
+
+## BMO voice problems
+
+Confirm:
+
+```text
+piper/bmo.onnx
+piper/bmo.onnx.json
+piper/piper
+```
+
+The installer creates the Piper executable link from the Python virtual environment.
+
 ---
 
-## 🎨 Customizing Your Character
+# Known limitations
 
-This software is a generic framework. You can give it a new personality by replacing the assets:
+## Spotify idle reconnection
 
-1.  **Faces:** The script looks for PNG sequences in `faces/[state]/`. It will loop through all images found in the folder.
-2.  **Sounds:** Put multiple `.wav` files in the `sounds/[category]/` folders. The robot will pick one at random each time (e.g., different "thinking" hums or "error" buzzes).
+Spotify App Remote can occasionally stop responding after the Android device or Spotify has been idle for a while.
+
+A reconnect-on-demand or reconnect-on-resume strategy may be added.
+
+Constant keepalive polling is intentionally avoided unless it proves necessary.
+
+## Network transport
+
+The current Android-to-Mac connection uses HTTP over Tailscale rather than HTTPS.
+
+## Hardware scope
+
+This branch is built and tested around the specific Mac + Android architecture described above.
+
+There is still some optional compatibility code inherited from earlier hardware targets. That code should not be assumed to be part of the supported Mac installation path.
 
 ---
-## 🗣️ The Custom BMO Voice
 
-This project features a custom, locally fine-tuned text-to-speech model to make the agent sound authentic! 
+# Project status
 
-When you run the `setup.sh` script, it will automatically download the compiled `.onnx` model and its `.json` configuration file from the [Releases page](https://github.com/brenpoly/be-more-agent/releases) and place them into a local `voices/` directory.
+The main v1 functionality currently includes:
 
-**Manual Installation (if you are not using setup.sh):**
-1. Download `bmo.onnx` and `bmo.onnx.json` from the [Latest Release](https://github.com/brenpoly/be-more-agent/releases).
-2. Create a folder named `voices/` in the root directory of this repository.
-3. Place both downloaded files inside the `voices/` folder.
-4. Ensure your `config.json` file points to the new model:
-   ```json
-   "voice_model": "voices/bmo.onnx"
+- [x] Core BMO interaction
+- [x] Wake word
+- [x] Android resilience
+- [x] Memory
+- [x] Timers and reminders
+- [x] Web search
+- [x] Homelab diagnostics
+- [x] Idle/daydream personality
+- [x] BMO sound personality
+- [x] Weather
+- [x] Google Calendar
+- [x] Spotify integration
+- [x] Simple vision
+- [x] Reliable diagnostics and logging
+- [x] Mac installation/start path
+- [ ] Final repository cleanup
+- [ ] Signed Android release APK
+- [ ] Tagged v1 release
+
+The current release target should be considered experimental while hardware-specific assumptions and remaining edge cases are documented.
+
 ---
 
-## ⚠️ Troubleshooting
+# Project philosophy
 
-* **"No search library found":** If web search fails, ensure you are in the virtual environment and `duckduckgo-search` is installed via pip.
-* **Shutdown Errors:** When you exit the script (Ctrl+C), you might see `Expression 'alsa_snd_pcm_mmap_begin' failed`. **This is normal.** It just means the audio stream was cut off mid-sample. It does not affect the functionality.
-* **Audio Glitches:** If the voice sounds fast or slow, the script attempts to auto-detect sample rates. Ensure your `config.json` points to a valid `.onnx` voice model in the `piper/` folder.
-If your custom BMO voice sounds incredibly deep, slow, or "demonic," don't panic! This is not an issue with the Piper installation or the setup script. It is almost always caused by a **Sample Rate (Hz)** mismatch between the model and the audio player.
+> "I LOVE THIS, but I don't want to invest money into it, so I'll use hardware I already own and build around that."
 
-Here is how to fix it:
+This project deliberately favors repurposing existing hardware over adding unnecessary new hardware.
 
-**Fix 1: Match the Sample Rate**
-By default, `agent.py` expects "medium" quality models and plays audio at 22050 Hz. If your custom model was trained at a different quality (like 48000 Hz or 16000 Hz), playing it at the default rate will stretch or compress the audio, severely altering the pitch.
+Feature creep before a stable v1 is intentionally discouraged.
 
-1. Open your model's configuration file (e.g., `voices/bmo.onnx.json`).
-2. Look for the `"sample_rate"` property and note the number (e.g., `22050`, `16000`, `48000`).
-3. Open `agent.py` and find the line: `PIPER_RATE = 22050`.
-4. Change that number to match the sample rate in your `.json` file.
-5. Save the file and restart the agent.
+---
 
-**Fix 2: Check the Length Scale**
-If the sample rates match perfectly, the issue might be the model's internal pacing setting.
+# Credits
 
-1. Open your `voices/bmo.onnx.json` file.
-2. Look inside the `"inference"` block for a setting called `"length_scale"`. 
-3. Piper uses this to determine the speed of the voice. If this value is set significantly higher than `1.0`, it will stretch the audio and make BMO sound like a zombie. Lower it closer to `1.0` to speed the voice back up to normal.
+This project is based on and inspired by the original **Be More Agent** project and related community work.
 
-## 📄 License
-This project is dual-licensed:
+Thanks to the original creators and contributors whose work made this fork possible.
 
-* **Software / Code:** All source code is licensed under the [MIT License](LICENSE).
-* **Hardware / 3D Models:** The `.obj`, `.stl`, and other 3D modeling files associated with the physical case are licensed under the [Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International License](https://creativecommons.org/licenses/by-nc-sa/4.0/)
-
-## ⚖️ Legal Disclaimer
-Disclaimer: Fan Project
-This repository and the associated voice model are a non-commercial, open-source fan project. "BMO" and Adventure Time are registered trademarks and copyrights of Cartoon Network and Warner Bros. Discovery. This project is not affiliated with, endorsed by, or sponsored by Cartoon Network or its parent companies.
-
-Voice Model Attribution
-The text-to-speech capabilities of this project are powered by Piper. The custom voice model was fine-tuned locally using Piper's base "Amy" model (en_US-amy-medium). The original Piper engine and base models are developed by the Rhasspy project and distributed under the MIT License.
+Please preserve upstream copyright and license notices when redistributing or modifying their work.

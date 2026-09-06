@@ -60,7 +60,7 @@ def _get_vlm():
         hef = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), hef)
 
     if not os.path.exists(hef):
-        raise FileNotFoundError(f"VLM HEF not found at {hef}. Run setup.sh to download it.")
+        raise FileNotFoundError(f"VLM HEF not found at {hef}. Configure the optional Hailo VLM assets before enabling Hailo VLM.")
 
     from hailo_platform import VDevice
     from hailo_platform.genai import VLM
