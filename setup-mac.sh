@@ -157,8 +157,12 @@ ln -sfn "$BASE_DIR/venv/bin/piper" piper/piper
 
 say_ok "Piper executable linked"
 
-BMO_VOICE_URL="https://github.com/brenpoly/be-more-agent/releases/latest/download/bmo.onnx"
-BMO_VOICE_JSON_URL="https://github.com/brenpoly/be-more-agent/releases/latest/download/bmo.onnx.json"
+BMO_VOICE_RELEASE="v1.0-voice"
+BMO_VOICE_URL="https://github.com/brenpoly/be-more-agent/releases/download/${BMO_VOICE_RELEASE}/bmo.onnx"
+BMO_VOICE_JSON_URL="https://github.com/brenpoly/be-more-agent/releases/download/${BMO_VOICE_RELEASE}/bmo.onnx.json"
+
+BMO_VOICE_SHA256="0b5a2f9e035f7798977320167f7b1bc5a5eeab4b15470d975b80fc56ae3bd8e0"
+BMO_VOICE_JSON_SHA256="32e87407fd1a33b1282d6ddc80cc2af58eeec86d5c004062100732a8e996ca05"
 
 if [ ! -f piper/bmo.onnx ]; then
     echo "Downloading BMO voice model..."
@@ -169,6 +173,9 @@ else
     say_ok "BMO voice model already present"
 fi
 
+echo "${BMO_VOICE_SHA256}  piper/bmo.onnx" | shasum -a 256 -c - >/dev/null
+say_ok "BMO voice model checksum verified"
+
 if [ ! -f piper/bmo.onnx.json ]; then
     echo "Downloading BMO voice configuration..."
     curl -fL \
@@ -177,6 +184,9 @@ if [ ! -f piper/bmo.onnx.json ]; then
 else
     say_ok "BMO voice configuration already present"
 fi
+
+echo "${BMO_VOICE_JSON_SHA256}  piper/bmo.onnx.json" | shasum -a 256 -c - >/dev/null
+say_ok "BMO voice configuration checksum verified"
 
 # ------------------------------------------------------------
 # whisper.cpp
