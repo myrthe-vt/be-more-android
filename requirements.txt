@@ -3,6 +3,7 @@ fastapi
 uvicorn
 pydantic
 python-multipart
+jinja2
 requests
 psutil
 python-dotenv

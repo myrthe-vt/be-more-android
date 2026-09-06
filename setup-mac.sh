@@ -289,10 +289,12 @@ done
 
 say_step "Checking optional integrations"
 
-if [ -f .env.spotify ]; then
+if [ -f .env ] \
+    && grep -Eq '^SPOTIFY_CLIENT_ID=.+' .env \
+    && grep -Eq '^SPOTIFY_CLIENT_SECRET=.+' .env; then
     say_ok "Spotify configuration found"
 else
-    say_warn ".env.spotify not found. Spotify integration will need configuration."
+    say_warn "Spotify Web API credentials not found in .env. Spotify catalog lookup will remain optional."
 fi
 
 if [ -f credentials.google-calendar.json ]; then
