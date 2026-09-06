@@ -9,7 +9,7 @@
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <application
-        android:allowBackup="true"
+        android:allowBackup="false"
         android:icon="@drawable/bmo_launcher_icon"
         android:roundIcon="@drawable/bmo_launcher_icon"
         android:label="BMO"

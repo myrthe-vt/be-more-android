@@ -278,6 +278,17 @@ class MainActivity : AppCompatActivity() {
         Boolean? =
         null
 
+    /*
+     * True only when BMO itself has started or resumed Spotify playback.
+     *
+     * Spotify App Remote can expose account-wide Spotify Connect state,
+     * so playerState.isPaused alone cannot prove that this LG is the
+     * device actually producing the music.
+     */
+    @Volatile
+    private var spotifyPlaybackOwnedByBmo =
+        false
+
     @Volatile
     private var spotifyConnectInProgress =
         false
@@ -590,13 +601,163 @@ class MainActivity : AppCompatActivity() {
         }.start()
     }
 
+    private fun isAllowedWebViewMainFrameUrl(
+        value: String?
+    ): Boolean {
+        if (
+            value.isNullOrBlank()
+        ) {
+            return false
+        }
+
+        /*
+         * Native setup/offline pages are loaded with
+         * loadDataWithBaseURL(null, ...), which uses
+         * about:blank as its local origin.
+         */
+        if (
+            value == "about:blank"
+        ) {
+            return true
+        }
+
+        val configuredBase =
+            BMO_BASE_URL
+
+        if (
+            configuredBase.isBlank()
+        ) {
+            return false
+        }
+
+        return try {
+            val candidate =
+                android.net.Uri.parse(
+                    value
+                )
+
+            val configured =
+                android.net.Uri.parse(
+                    configuredBase
+                )
+
+            val candidateHost =
+                candidate.host
+                    ?: return false
+
+            val configuredHost =
+                configured.host
+                    ?: return false
+
+            val candidateScheme =
+                candidate.scheme
+                    ?: return false
+
+            val configuredScheme =
+                configured.scheme
+                    ?: return false
+
+            fun effectivePort(
+                uri: android.net.Uri
+            ): Int {
+                if (
+                    uri.port != -1
+                ) {
+                    return uri.port
+                }
+
+                return when (
+                    uri.scheme
+                        ?.lowercase()
+                ) {
+                    "https" -> 443
+                    "http" -> 80
+                    else -> -1
+                }
+            }
+
+            candidateScheme.equals(
+                configuredScheme,
+                ignoreCase = true
+            ) &&
+                candidateHost.equals(
+                    configuredHost,
+                    ignoreCase = true
+                ) &&
+                effectivePort(
+                    candidate
+                ) ==
+                effectivePort(
+                    configured
+                )
+
+        } catch (
+            exception: Exception
+        ) {
+            Log.w(
+                WAKE_LOG,
+                "Could not validate WebView URL",
+                exception
+            )
+
+            false
+        }
+    }
+
+
     private fun setupWebView() {
+        val appIsDebuggable =
+            (
+                applicationInfo.flags and
+                    android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE
+            ) != 0
+
         WebView.setWebContentsDebuggingEnabled(
-            true
+            appIsDebuggable
         )
 
         webView.webViewClient =
             object : WebViewClient() {
+
+                override fun shouldOverrideUrlLoading(
+                    view: WebView?,
+                    request: WebResourceRequest?
+                ): Boolean {
+                    if (
+                        request?.isForMainFrame !=
+                        true
+                    ) {
+                        return false
+                    }
+
+                    val requestedUrl =
+                        request.url
+                            ?.toString()
+
+                    if (
+                        isAllowedWebViewMainFrameUrl(
+                            requestedUrl
+                        )
+                    ) {
+                        return false
+                    }
+
+                    Log.w(
+                        WAKE_LOG,
+                        "Blocked WebView navigation outside trusted BMO origin"
+                    )
+
+                    reportAndroidError(
+                        message =
+                            "Blocked untrusted WebView navigation",
+
+                        url =
+                            requestedUrl
+                    )
+
+                    return true
+                }
+
 
                 override fun onPageFinished(
                     view: WebView?,
@@ -856,7 +1017,7 @@ showingBmoPage =
                 false
 
             allowContentAccess =
-                true
+                false
 
             setSupportZoom(
                 false
@@ -2673,6 +2834,9 @@ showingBmoPage =
     }
 
     private fun markSpotifyDisconnectedState() {
+        spotifyPlaybackOwnedByBmo =
+            false
+
         spotifyLastKnownPaused =
             null
 
@@ -2731,6 +2895,13 @@ showingBmoPage =
             "Play requested: $uri"
         )
 
+        /*
+         * The request originated from BMO, so this is the only kind of
+         * Spotify playback allowed to drive BMO's jamming face.
+         */
+        spotifyPlaybackOwnedByBmo =
+            true
+
         appRemote
             .playerApi
             .play(
@@ -2743,6 +2914,9 @@ showingBmoPage =
                 )
             }
             .setErrorCallback { throwable ->
+                spotifyPlaybackOwnedByBmo =
+                    false
+
                 Log.e(
                     SPOTIFY_LOG,
                     "Play command failed: ${throwable.message}",
@@ -3806,6 +3980,9 @@ showingBmoPage =
         @JavascriptInterface
         fun spotifyPause() {
             runOnUiThread {
+                spotifyPlaybackOwnedByBmo =
+                    false
+
                 if (
                     voiceInteractionOriginalMusicVolume != null
                 ) {
@@ -3876,6 +4053,9 @@ showingBmoPage =
         @JavascriptInterface
         fun spotifyResume() {
             runOnUiThread {
+                spotifyPlaybackOwnedByBmo =
+                    true
+
                 val appRemote =
                     getConnectedSpotifyRemote()
 
@@ -3908,6 +4088,9 @@ showingBmoPage =
                         )
                     }
                     .setErrorCallback { throwable ->
+                        spotifyPlaybackOwnedByBmo =
+                            false
+
                         Log.e(
                             SPOTIFY_LOG,
                             "Resume command failed: ${throwable.message}",
@@ -4047,13 +4230,8 @@ showingBmoPage =
         }
         @JavascriptInterface
         fun getSpotifyState(): String {
-            val audioManager =
-                getSystemService(
-                    Context.AUDIO_SERVICE
-                ) as AudioManager
-
             val localAudioActive =
-                audioManager.isMusicActive
+                spotifyPlaybackOwnedByBmo
 
             return try {
                 JSONObject(
