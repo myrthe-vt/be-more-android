@@ -3082,11 +3082,11 @@ class MainActivity : AppCompatActivity() {
 
     /*
      * =====================================================================
-     * Native rear camera / vision
+     * Native front camera / vision
      * =====================================================================
      */
 
-    private fun getRearCameraId(): Int {
+    private fun getFrontCameraId(): Int {
         val info =
             Camera.CameraInfo()
 
@@ -3101,7 +3101,7 @@ class MainActivity : AppCompatActivity() {
 
             if (
                 info.facing ==
-                Camera.CameraInfo.CAMERA_FACING_BACK
+                Camera.CameraInfo.CAMERA_FACING_FRONT
             ) {
                 return cameraId
             }
@@ -3197,12 +3197,12 @@ class MainActivity : AppCompatActivity() {
 
         Log.i(
             WAKE_LOG,
-            "Opening rear camera for BMO vision"
+            "Opening front camera for BMO vision"
         )
 
         try {
             val cameraId =
-                getRearCameraId()
+                getFrontCameraId()
 
             val camera =
                 Camera.open(
@@ -3339,6 +3339,9 @@ class MainActivity : AppCompatActivity() {
                     Log.i(
                         WAKE_LOG,
                         "Camera image captured: ${data.size} bytes"
+                    )
+                    notifyJavascriptVisionCaptured(
+                        data
                     )
 
                     releaseVisionCamera()
@@ -4176,6 +4179,127 @@ class MainActivity : AppCompatActivity() {
     }
 
 
+    private fun notifyJavascriptVisionCaptured(
+        jpegData: ByteArray
+    ) {
+        try {
+            val originalBitmap =
+                android.graphics.BitmapFactory.decodeByteArray(
+                    jpegData,
+                    0,
+                    jpegData.size
+                )
+                    ?: return
+
+            val maxDimension =
+                720
+
+            val width =
+                originalBitmap.width
+
+            val height =
+                originalBitmap.height
+
+            val scale =
+                if (
+                    width > maxDimension ||
+                    height > maxDimension
+                ) {
+                    minOf(
+                        maxDimension.toFloat() /
+                                width.toFloat(),
+                        maxDimension.toFloat() /
+                                height.toFloat()
+                    )
+                } else {
+                    1.0f
+                }
+
+            val previewWidth =
+                (width * scale)
+                    .toInt()
+                    .coerceAtLeast(
+                        1
+                    )
+
+            val previewHeight =
+                (height * scale)
+                    .toInt()
+                    .coerceAtLeast(
+                        1
+                    )
+
+            val previewBitmap =
+                if (
+                    previewWidth != width ||
+                    previewHeight != height
+                ) {
+                    android.graphics.Bitmap.createScaledBitmap(
+                        originalBitmap,
+                        previewWidth,
+                        previewHeight,
+                        true
+                    )
+                } else {
+                    originalBitmap
+                }
+
+            val output =
+                java.io.ByteArrayOutputStream()
+
+            previewBitmap.compress(
+                android.graphics.Bitmap.CompressFormat.JPEG,
+                72,
+                output
+            )
+
+            val encoded =
+                android.util.Base64.encodeToString(
+                    output.toByteArray(),
+                    android.util.Base64.NO_WRAP
+                )
+
+            val dataUrl =
+                "data:image/jpeg;base64,$encoded"
+
+            val quotedDataUrl =
+                JSONObject.quote(
+                    dataUrl
+                )
+
+            evaluateJavascript(
+                """
+                if (
+                    window.onNativeVisionCaptured
+                ) {
+                    window.onNativeVisionCaptured(
+                        $quotedDataUrl
+                    );
+                }
+                """.trimIndent()
+            )
+
+            if (
+                previewBitmap !== originalBitmap
+            ) {
+                previewBitmap.recycle()
+            }
+
+            originalBitmap.recycle()
+
+            output.close()
+
+        } catch (
+            exception: Exception
+        ) {
+            Log.w(
+                WAKE_LOG,
+                "Could not prepare vision preview",
+                exception
+            )
+        }
+    }
+
     private fun notifyJavascriptVisionResponse(
         responseText: String
     ) {
@@ -4497,6 +4621,8 @@ class MainActivity : AppCompatActivity() {
         super.onDestroy()
     }
 }
+
+
 
 
 
