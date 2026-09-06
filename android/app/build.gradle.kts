@@ -1,56 +1,6 @@
-import java.util.Properties
-
 plugins {
     alias(libs.plugins.android.application)
 }
-
-val localProperties = Properties().apply {
-    val localPropertiesFile =
-        rootProject.file("local.properties")
-
-    if (localPropertiesFile.exists()) {
-        localPropertiesFile
-            .inputStream()
-            .use(::load)
-    }
-}
-
-val bmoBaseUrl =
-    (
-        localProperties.getProperty(
-            "BMO_BASE_URL"
-        )
-            ?: providers
-                .gradleProperty(
-                    "BMO_BASE_URL"
-                )
-                .orNull
-            ?: ""
-    )
-        .trim()
-        .trimEnd('/')
-
-if (bmoBaseUrl.isBlank()) {
-    throw GradleException(
-        "BMO backend URL is not configured. " +
-            "Set BMO_BASE_URL in android/local.properties " +
-            "or in user-level Gradle properties."
-    )
-}
-
-if (
-    !bmoBaseUrl.startsWith("http://") &&
-    !bmoBaseUrl.startsWith("https://")
-) {
-    throw GradleException(
-        "BMO_BASE_URL must start with http:// or https://"
-    )
-}
-
-val escapedBmoBaseUrl =
-    bmoBaseUrl
-        .replace("\\", "\\\\")
-        .replace("\"", "\\\"")
 
 val releaseStoreFile = providers.gradleProperty("BMO_RELEASE_STORE_FILE")
 val releaseStorePassword = providers.gradleProperty("BMO_RELEASE_STORE_PASSWORD")
@@ -91,12 +41,6 @@ android {
         versionCode = 1
         versionName = "0.9.0"
 
-        buildConfigField(
-            "String",
-            "BMO_BASE_URL",
-            "\"$escapedBmoBaseUrl\"",
-        )
-
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -109,10 +53,6 @@ android {
                 keyPassword = releaseKeyPassword.get()
             }
         }
-    }
-
-    buildFeatures {
-        buildConfig = true
     }
 
     buildTypes {

@@ -82,43 +82,6 @@ class MainActivity : AppCompatActivity() {
         private const val WEBVIEW_RECOVERY_COOLDOWN_MS =
             20000L
 
-        private val BMO_BASE_URL =
-            BuildConfig.BMO_BASE_URL
-
-        private val BMO_URL =
-            "$BMO_BASE_URL/static/face.html?native=1"
-
-        private val STATUS_URL =
-            "$BMO_BASE_URL/api/status"
-
-        private val CLIENT_ERROR_URL =
-            "$BMO_BASE_URL/api/client-error"
-
-        private val TRANSCRIBE_URL =
-            "$BMO_BASE_URL/api/transcribe"
-
-        private val WAKEWORD_URL =
-            when {
-                BMO_BASE_URL.startsWith("https://") ->
-                    "wss://" +
-                        BMO_BASE_URL.removePrefix(
-                            "https://"
-                        ) +
-                        "/api/wakeword"
-
-                BMO_BASE_URL.startsWith("http://") ->
-                    "ws://" +
-                        BMO_BASE_URL.removePrefix(
-                            "http://"
-                        ) +
-                        "/api/wakeword"
-
-                else ->
-                    error(
-                        "Unsupported BMO_BASE_URL scheme"
-                    )
-            }
-
         private const val WAKE_SAMPLE_RATE =
             16000
 
@@ -187,6 +150,75 @@ class MainActivity : AppCompatActivity() {
 
     private var lastWebViewRecoveryAt =
         0L
+
+    @Volatile
+    private var backendSetupActive =
+        false
+
+    /*
+     * Runtime backend configuration.
+     *
+     * The backend address is stored only on this Android
+     * device. It is never compiled into the APK.
+     */
+    private val backendPreferences by lazy {
+        getSharedPreferences(
+            "bmo_settings",
+            MODE_PRIVATE
+        )
+    }
+
+    private val BMO_BASE_URL: String
+        get() =
+            backendPreferences
+                .getString(
+                    "backend_base_url",
+                    ""
+                )
+                ?.trim()
+                ?.trimEnd('/')
+                .orEmpty()
+
+    private val BMO_URL: String
+        get() =
+            "$BMO_BASE_URL/static/face.html?native=1"
+
+    private val STATUS_URL: String
+        get() =
+            "$BMO_BASE_URL/api/status"
+
+    private val CLIENT_ERROR_URL: String
+        get() =
+            "$BMO_BASE_URL/api/client-error"
+
+    private val TRANSCRIBE_URL: String
+        get() =
+            "$BMO_BASE_URL/api/transcribe"
+
+    private val WAKEWORD_URL: String
+        get() =
+            when {
+                BMO_BASE_URL.startsWith(
+                    "https://"
+                ) ->
+                    "wss://" +
+                        BMO_BASE_URL.removePrefix(
+                            "https://"
+                        ) +
+                        "/api/wakeword"
+
+                BMO_BASE_URL.startsWith(
+                    "http://"
+                ) ->
+                    "ws://" +
+                        BMO_BASE_URL.removePrefix(
+                            "http://"
+                        ) +
+                        "/api/wakeword"
+
+                else ->
+                    ""
+            }
 
 
     /*
@@ -860,6 +892,23 @@ showingBmoPage =
 
     private fun checkBackendAndUpdateUi() {
         if (
+            BMO_BASE_URL.isBlank()
+        ) {
+            mainHandler.removeCallbacks(
+                retryRunnable
+            )
+
+            backendCheckRunning =
+                false
+
+            stopWakeWordSystem()
+
+            showBackendSetupPage()
+
+            return
+        }
+
+        if (
             backendCheckRunning
         ) {
             return
@@ -1092,6 +1141,214 @@ showingBmoPage =
                 }
             }
         }.start()
+    }
+
+
+    private fun showBackendSetupPage() {
+        backendSetupActive =
+            true
+
+        stopWakeWordSystem()
+
+        showingBmoPage =
+            false
+
+        bmoPageReady =
+            false
+
+        val currentUrl =
+            BMO_BASE_URL
+                .replace(
+                    "&",
+                    "&amp;"
+                )
+                .replace(
+                    "\"",
+                    "&quot;"
+                )
+                .replace(
+                    "<",
+                    "&lt;"
+                )
+                .replace(
+                    ">",
+                    "&gt;"
+                )
+
+        val html =
+            """
+            <!doctype html>
+            <html>
+            <head>
+                <meta
+                    name="viewport"
+                    content="width=device-width, initial-scale=1"
+                >
+                <style>
+                    html,
+                    body {
+                        margin: 0;
+                        width: 100%;
+                        height: 100%;
+                        background: #79cfa5;
+                        color: #10251c;
+                        font-family: sans-serif;
+                    }
+
+                    body {
+                        display: flex;
+                        align-items: center;
+                        justify-content: center;
+                    }
+
+                    .card {
+                        box-sizing: border-box;
+                        width: min(88vw, 520px);
+                        padding: 28px;
+                        border: 4px solid #10251c;
+                        border-radius: 18px;
+                        background: #a7e0c1;
+                        box-shadow: 8px 8px 0 #10251c;
+                    }
+
+                    h1 {
+                        margin: 0 0 12px;
+                        font-size: 28px;
+                    }
+
+                    p {
+                        line-height: 1.45;
+                    }
+
+                    input {
+                        box-sizing: border-box;
+                        width: 100%;
+                        margin: 10px 0 14px;
+                        padding: 13px;
+                        border: 3px solid #10251c;
+                        border-radius: 10px;
+                        background: white;
+                        color: #10251c;
+                        font-size: 16px;
+                    }
+
+                    button {
+                        width: 100%;
+                        padding: 13px;
+                        border: 3px solid #10251c;
+                        border-radius: 10px;
+                        background: #f6e96b;
+                        color: #10251c;
+                        font-size: 17px;
+                        font-weight: bold;
+                    }
+
+                    #status {
+                        min-height: 24px;
+                        margin-top: 12px;
+                        font-weight: bold;
+                    }
+
+                    .hint {
+                        opacity: 0.72;
+                        font-size: 14px;
+                    }
+                </style>
+            </head>
+
+            <body>
+                <div class="card">
+                    <h1>Set up BMO</h1>
+
+                    <p>
+                        Enter the address of the Mac running
+                        the BMO backend.
+                    </p>
+
+                    <input
+                        id="backend"
+                        type="url"
+                        value="$currentUrl"
+                        placeholder="http://your-mac-address:8000"
+                        autocomplete="off"
+                        autocapitalize="off"
+                        spellcheck="false"
+                    >
+
+                    <button onclick="saveBackend()">
+                        Save and connect
+                    </button>
+
+                    <div id="status"></div>
+
+                    <p class="hint">
+                        Use the full address including
+                        http:// or https://.
+                    </p>
+                </div>
+
+                <script>
+                    function saveBackend() {
+                        const input =
+                            document.getElementById(
+                                'backend'
+                            );
+
+                        const status =
+                            document.getElementById(
+                                'status'
+                            );
+
+                        const value =
+                            input.value.trim();
+
+                        if (
+                            !value.startsWith('http://') &&
+                            !value.startsWith('https://')
+                        ) {
+                            status.textContent =
+                                'Address must start with http:// or https://';
+                            return;
+                        }
+
+                        if (
+                            !window.AndroidBMO ||
+                            !window.AndroidBMO.setBackendBaseUrl
+                        ) {
+                            status.textContent =
+                                'Android setup bridge unavailable.';
+                            return;
+                        }
+
+                        const result =
+                            window.AndroidBMO
+                                .setBackendBaseUrl(
+                                    value
+                                );
+
+                        if (
+                            result !== 'ok'
+                        ) {
+                            status.textContent =
+                                result;
+                            return;
+                        }
+
+                        status.textContent =
+                            'Saved. Connecting...';
+                    }
+                </script>
+            </body>
+            </html>
+            """.trimIndent()
+
+        webView.loadDataWithBaseURL(
+            null,
+            html,
+            "text/html",
+            "UTF-8",
+            null
+        )
     }
 
 
@@ -2947,6 +3204,90 @@ showingBmoPage =
         }
     }
     inner class BMOBridge {
+
+        @JavascriptInterface
+        fun getBackendBaseUrl(): String {
+            return BMO_BASE_URL
+        }
+
+        @JavascriptInterface
+        fun setBackendBaseUrl(
+            value: String
+        ): String {
+            if (
+                !backendSetupActive
+            ) {
+                Log.w(
+                    WAKE_LOG,
+                    "Rejected backend URL change outside setup page"
+                )
+
+                return "Backend address can only be changed from the local setup page."
+            }
+
+            val normalized =
+                value
+                    .trim()
+                    .trimEnd('/')
+
+            if (
+                normalized.isBlank()
+            ) {
+                return "Backend address cannot be blank."
+            }
+
+            if (
+                !normalized.startsWith("http://") &&
+                !normalized.startsWith("https://")
+            ) {
+                return "Backend address must start with http:// or https://."
+            }
+
+            if (
+                normalized.any {
+                    it.isWhitespace()
+                }
+            ) {
+                return "Backend address cannot contain spaces."
+            }
+
+            backendPreferences
+                .edit()
+                .putString(
+                    "backend_base_url",
+                    normalized
+                )
+                .apply()
+
+            backendSetupActive =
+                false
+
+            runOnUiThread {
+                mainHandler.removeCallbacks(
+                    retryRunnable
+                )
+
+                stopWakeWordSystem()
+
+                wakeWebSocket
+                    ?.cancel()
+
+                wakeWebSocket =
+                    null
+
+                showingBmoPage =
+                    false
+
+                bmoPageReady =
+                    false
+
+                webView.stopLoading()
+
+                checkBackendAndUpdateUi()
+            }
+
+            return "ok"
+        }
 
         /*
          * Harmless diagnostics test hook.
