@@ -1,91 +1,72 @@
 # Be More Agent / BMO 🤖
 
-**An embodied, local-first BMO assistant using an Android phone as the body and a MacBook Pro as the brain.**
+An embodied, local-first BMO assistant that uses an Android phone as the body and a Mac as the brain.
 
-This fork of [brenpoly/be-more-agent](https://github.com/brenpoly/be-more-agent) is built around hardware I already owned: an **LG G7 ThinQ** for BMO's face, microphone, speaker, camera, wake word, and native Android controls, paired with a **2021 M1 Pro MacBook Pro** for local AI, speech, integrations, memory, and the FastAPI backend.
+BMO is more than a chatbot with a character-themed interface. The Android device provides the face, microphone, speaker, camera, wake word, and physical presence, while the Mac runs the local language model, speech tools, integrations, memory, and FastAPI backend.
 
-The goal is not a generic chatbot wearing a BMO face. It is one coherent little embodied character.
+This project is designed around reusing hardware you already own. The reference setup uses an LG G7 ThinQ and a 2021 M1 Pro MacBook Pro, but compatible Android and macOS devices may work too.
 
-> **Fan project:** BMO, Adventure Time, and related properties belong to their respective rights holders. This project is not affiliated with or endorsed by Cartoon Network or Warner Bros. Discovery.
+> **Fan project:** BMO, Adventure Time, and related properties belong to their respective rights holders. This unofficial project is not affiliated with or endorsed by Cartoon Network or Warner Bros. Discovery.
 
----
+## Features
 
-## ✨ Features
+- Local conversation with Ollama and `qwen2.5:7b`
+- Local speech recognition with whisper.cpp
+- Piper text-to-speech with a custom BMO voice
+- Native Android wake-word detection and command recording
+- Animated expressions, sound reactions, critters, and idle/daydream behavior
+- Native Android camera, audio handling, touch controls, and volume overlay
+- Spotify playback and now-playing information
+- Google Calendar questions with read-only access
+- Weather, web search, timers, reminders, and persistent memory
+- Simple camera vision using `moondream:latest`
+- Read-only homelab diagnostics
+- Pronunciation editor and developer diagnostics
+- Rotating backend and Android client-error logs
 
-- **Local AI:** Ollama + `qwen2.5:7b`
-- **Local speech recognition:** `whisper.cpp` with `ggml-base.en`
-- **BMO voice:** Piper TTS with the custom BMO voice model
-- **Wake word:** custom OpenWakeWord model
-- **Android-native interaction:** wake word, command recording, audio state, camera, touch controls, and native/touch volume overlay
-- **Spotify:** native Android App Remote + Mac Spotify Web API, with idle reconnect recovery
-- **Google Calendar**
-- **Weather**
-- **Web search**
-- **Timers & reminders**
-- **Persistent memory**
-- **Vision:** `moondream:latest`
-- **Idle/daydream personality**
-- **Reactive expressions, critters, now-playing display, charging/unplugging reactions, and sound personality**
-- **Hidden developer/debug screen** with runtime controls and diagnostics
-- **Pronunciation editor** for speech fixes without editing code
-- **Diagnostics & rotating logs**
-- **Tailscale-friendly Mac ↔ Android architecture**
+Optional integrations fail independently. BMO's core local conversation remains available when services such as Spotify, Calendar, weather, vision, or homelab diagnostics are not configured.
 
----
+## How it works
 
-## 🧠 What runs where
-
-| Component | Where it runs | Implementation |
-|---|---|---|
-| BMO face / UI | LG G7 ThinQ | Android WebView |
-| Wake word | Android | OpenWakeWord |
-| Command recording | Android | Native Android audio |
-| Spotify playback control | Android | Spotify App Remote |
-| Camera | Android | Native Android |
-| Audio activity detection / volume UI | Android | `AudioManager` + native overlay |
-| Developer/debug screen | Android | Hidden native/WebView debug UI |
-| Backend | MacBook Pro | FastAPI / Uvicorn |
-| LLM | MacBook Pro | Ollama, `qwen2.5:7b` |
-| Vision | MacBook Pro | Ollama, `moondream:latest` |
-| STT | MacBook Pro | whisper.cpp, `ggml-base.en` |
-| TTS | MacBook Pro | Piper |
-| Calendar | MacBook Pro | Google Calendar API |
-| Spotify metadata / Web API | MacBook Pro | Spotify Web API |
-| Weather / search / memory / timers | MacBook Pro | Python backend |
-| Networking | Both | Tailscale |
-
-### Hardware used
-
-| Role | Hardware |
+| Android body | Mac brain |
 |---|---|
-| **Body** | LG G7 ThinQ, Android 8+ |
-| **Brain** | 2021 M1 Pro MacBook Pro, 16 GB RAM |
-| **Network** | Tailscale |
-| **Extra hardware required** | None beyond devices already owned |
+| Full-screen BMO face | FastAPI backend |
+| Wake-word detection | Ollama language and vision models |
+| Microphone and command recording | whisper.cpp speech recognition |
+| Camera capture | Piper text-to-speech |
+| Spotify App Remote | Spotify Web API lookup |
+| Touch and native device controls | Calendar, weather, search, memory, and timers |
 
----
+The devices communicate over a trusted private network. The tested setup uses Tailscale and port `8000`.
 
-## 🚀 Quick start
+## Requirements
 
-### Mac
-
-Requirements:
+### Mac brain
 
 - macOS
 - Homebrew
 - Ollama
+- Enough free space for Python dependencies and local AI models
 
-Clone the repository:
+The supported installer uses Python 3.13 and sets up Piper, whisper.cpp, required Python packages, and the Ollama models.
+
+### Android body
+
+- Android 8.0 or newer (`minSdk 26`)
+- Microphone and optional camera access
+- Network access to the Mac backend
+- Spotify installed and a compatible Spotify account for playback features
+
+The Android app is tested primarily on an LG G7 ThinQ in landscape orientation.
+
+## Quick start
+
+### 1. Set up the Mac
 
 ```bash
 git clone https://github.com/myrthe-vt/be-more-android.git be-more-agent
 cd be-more-agent
-```
-
-Run the installer:
-
-```bash
-chmod +x setup-mac.sh
+chmod +x setup-mac.sh start-bmo.sh
 ./setup-mac.sh
 ```
 
@@ -95,311 +76,86 @@ Start BMO:
 ./start-bmo.sh
 ```
 
-The backend runs on:
+On the Mac itself, the backend is available at `http://localhost:8000`. The Android device must use the Mac's reachable private LAN or Tailscale address instead of `localhost`.
 
-```text
-http://0.0.0.0:8000
-```
+### 2. Install the Android app
 
-`setup-mac.sh` checks or installs the supported Mac stack, including Python 3.13, required Homebrew packages, the Python environment, Piper, whisper.cpp, and the required Ollama models.
+Download the signed APK from the repository's [Releases](https://github.com/myrthe-vt/be-more-android/releases) page, or build the Android client from source with Android Studio.
 
-### Android
+The phone may ask you to allow installation from the browser or file manager used to open the APK. After installation, configure the Mac backend address in BMO's developer screen.
 
-The Android client lives in the `android/` directory of this repository.
+See [Android setup](docs/ANDROID_SETUP.md) for device configuration, permissions, Spotify setup, source builds, and troubleshooting.
 
-For complete Android Studio, device, backend, Spotify, and troubleshooting instructions, see [`docs/ANDROID_SETUP.md`](docs/ANDROID_SETUP.md).
+## Optional integrations
 
-Current build configuration:
+| Integration | Configuration | Behavior when unavailable |
+|---|---|---|
+| Spotify Web API | `SPOTIFY_CLIENT_ID` and `SPOTIFY_CLIENT_SECRET` in `.env` | Music lookup reports that Spotify is unavailable |
+| Google Calendar | Local OAuth credentials, token, and optional calendar selection | BMO reports that Calendar is not connected |
+| Weather | No API key; requires outbound internet access | BMO reports that weather cannot be checked |
+| Vision | Ollama with `moondream:latest` | Camera understanding reports that BMO's eyes are unavailable |
+| Homelab diagnostics | Optional host values in `.env` | Remote diagnostics remain disabled |
 
-| Setting | Value |
+Google Calendar uses the `calendar.readonly` OAuth scope. Homelab functionality is diagnostic-only and does not perform recovery or administrative actions.
+
+Copy `.env.example` to `.env` when you need optional local configuration. Never commit the resulting `.env`, OAuth tokens, calendar data, private network details, or signing credentials.
+
+## Android permissions
+
+| Permission | Purpose |
 |---|---|
-| Package | `com.sapphi.bmo` |
-| minSdk | 26 |
-| targetSdk | 36 |
-| compileSdk | 36 |
-| Java | 11 |
-| Orientation | Landscape |
+| Microphone | Wake-word detection and spoken commands |
+| Camera | Still-image capture for explicit vision requests |
+| Internet | Communication with the Mac backend and integrations |
+| Network state | Connection detection and backend recovery |
+| Boot completed | Restoring the dedicated BMO experience after reboot |
 
-Build a debug APK from Windows:
+Audio recordings and explicitly captured images are sent only to the backend address configured in the Android app.
 
-```powershell
-cd C:\GitHub\be-more-android\android
-.\gradlew.bat assembleDebug
-```
+## Diagnostics
 
-The Android client currently reaches the Mac backend over **Tailscale HTTP**. Cleartext traffic is therefore intentionally enabled for this configuration.
-
----
-
-## 🔧 Mac stack
-
-| Service | Current configuration |
-|---|---|
-| Python | 3.13 |
-| Backend | FastAPI + Uvicorn |
-| LLM | `qwen2.5:7b` |
-| Vision | `moondream:latest` |
-| STT | whisper.cpp `ggml-base.en` |
-| TTS | Piper + custom `bmo.onnx` |
-| Wake model | `wakeword.onnx` |
-| Port | `8000` |
-
-### Ollama models
-
-```bash
-ollama pull qwen2.5:7b
-ollama pull moondream:latest
-```
-
-The setup script checks these automatically.
-
----
-
-## 🎵 Integrations
-
-| Integration | Notes |
-|---|---|
-| **Spotify** | Native Android App Remote for playback + Mac Web API support |
-| **Google Calendar** | OAuth credentials stored locally and ignored by Git |
-| **Weather** | Backend weather integration |
-| **Web search** | Current search backend uses `ddgs` |
-| **Vision** | Android camera + Mac `moondream` processing |
-| **Homelab diagnostics** | Read-only diagnostic flows |
-
-### Spotify
-
-Supported native controls include:
-
-- play
-- pause
-- resume
-- next
-- previous
-- shuffle
-- repeat
-- now-playing metadata
-- playback progress
-
-Spotify App Remote recovery is handled without a permanent keepalive: BMO reconnects on resume or on demand when a stale connection is detected. A one-shot pending command retry lets the command that discovered the stale connection continue automatically after reconnect.
-
-BMO also checks Android's local audio state so the **jamming** expression only appears when music is actually audible.
-
-### Google Calendar
-
-These files stay local and are ignored by Git:
-
-```text
-credentials.google-calendar.json
-token.google-calendar.json
-calendar_selection.json
-```
-
----
-
-### Optional services & failure behavior
-
-BMO's core local chat interface does not require every integration to be configured. Optional services fail independently so one missing service does not prevent the backend from starting.
-
-| Service | What it enables | Local configuration | If unavailable |
-|---|---|---|---|
-| **Spotify Web API** | Track, artist, and album lookup before Android playback | `SPOTIFY_CLIENT_ID` and `SPOTIFY_CLIENT_SECRET` in `.env` | Spotify catalog requests fail cleanly; the rest of BMO remains available |
-| **Google Calendar** | Read-only calendar questions such as today, tomorrow, afternoon, and next event | `credentials.google-calendar.json`, local OAuth token, and optional `calendar_selection.json` | BMO reports that the calendar is not connected |
-| **Weather** | Current weather and short forecasts through Open-Meteo | No API key required; outbound internet access is needed | BMO reports that weather cannot be checked |
-| **Vision** | Camera-image understanding | Local Ollama with `moondream:latest` | Vision reports that BMO's eyes are unavailable; other features continue working |
-| **Homelab diagnostics** | Read-only checks of configured hosts and services | Optional `BMO_HOMELAB_PRIMARY_HOST` and `BMO_HOMELAB_MEDIA_HOST` values | Leave the values blank to disable remote checks safely |
-
-Google Calendar uses the `calendar.readonly` OAuth scope. Calendar access is performed by the Mac backend, not by an Android calendar permission.
-
-### Android permissions
-
-The Android body requests only the platform permissions needed for its hardware-facing features:
-
-| Permission | Why BMO uses it |
-|---|---|
-| `RECORD_AUDIO` | Wake-word detection and spoken command recording |
-| `CAMERA` | Still-image capture for explicit vision requests |
-| `INTERNET` | Communication with the Mac backend and network-backed integrations |
-| `ACCESS_NETWORK_STATE` | Detecting connectivity changes and recovering the backend connection |
-| `RECEIVE_BOOT_COMPLETED` | Restoring BMO's Android-side behavior after the phone reboots |
-
-Spotify playback uses Spotify App Remote on Android and the optional Spotify Web API on the Mac. It does not require a separate Android runtime permission. Google Calendar likewise runs through the Mac backend rather than an Android calendar permission.
-
-Microphone and camera access remain local to the Android body until BMO needs to send recorded audio or an explicitly captured image to the configured backend.
-
-The Android client supports local HTTP backends. HTTP traffic is not encrypted, so use HTTPS or a trusted private network such as a Tailnet when traffic could cross an untrusted network.
-
-## 📂 Project structure
-
-```text
-be-more-agent/
-├── web_app.py                  # FastAPI backend
-├── bmo_diagnostics.py          # Diagnostic CLI
-├── setup-mac.sh                # Supported Mac installer
-├── start-bmo.sh                # Normal launcher
-├── wakeword.onnx               # Custom wake-word model
-├── requirements.txt
-├── core/
-│   ├── config.py
-│   ├── llm.py
-│   ├── stt.py
-│   ├── tts.py
-│   ├── search.py
-│   ├── calendar.py
-│   ├── weather.py
-│   ├── spotify.py
-│   ├── diagnostics.py
-│   └── logging_setup.py
-├── static/
-│   └── face.js                 # WebView face / interaction logic
-├── piper/                      # Local TTS runtime + model (ignored)
-├── whisper.cpp/                # Local STT build + model (ignored)
-├── logs/                       # Rotating runtime logs (ignored)
-└── venv/                       # Python environment (ignored)
-```
-
----
-
-## 🩺 Diagnostics
-
-Run:
+Run the local diagnostic tool from the repository directory:
 
 ```bash
 source venv/bin/activate
 python bmo_diagnostics.py
 ```
 
-Or query:
+It checks the backend, speech tools, models, disk space, optional integrations, log rotation, and recent backend or Android client errors. Runtime logs are written to `logs/bmo.log` with rotation enabled.
 
-```text
-GET /api/diagnostics
-```
+## Security and beta limitations
 
-Diagnostics currently cover:
+- BMO is an experimental self-hosted project, not a hardened public service.
+- The backend has no user authentication and must remain on a trusted private LAN or Tailnet.
+- The Android client supports HTTP for private-network deployments. HTTP is unencrypted, so use HTTPS when traffic could cross an untrusted network.
+- Do not port-forward the backend or expose it directly to the public internet.
+- The supported and tested installation path is macOS plus Android. Other platforms may require manual changes.
+- Optional integrations require separate accounts, credentials, applications, or local services as described in the setup documentation.
 
-- Ollama/backend
-- Piper binary and model
-- whisper.cpp binary and model
-- disk space
-- Calendar
-- Spotify
-- weather
-- vision model
-- log rotation
-- latest backend error
-- latest frontend/native Android client error
+## Documentation
 
-Runtime logs are written to:
+- [Android setup](docs/ANDROID_SETUP.md)
+- [Architecture](docs/ARCHITECTURE.md)
+- [Maintenance and release checks](docs/MAINTENANCE.md)
+- [Changelog](CHANGELOG.md)
 
-```text
-logs/bmo.log
-```
+## Project philosophy
 
-with **5 MB rotation and 3 backups**.
+Build around hardware you already own, keep the AI local where practical, and make the Android body feel like one small, expressive character rather than a remote control for a chatbot.
 
----
+## Credits
 
-## 🔐 Local config & secrets
+- [brenpoly/be-more-agent](https://github.com/brenpoly/be-more-agent), the original project
+- [moorew/be-more-hailo](https://github.com/moorew/be-more-hailo), Hailo fork and major inspiration
+- OpenWakeWord for offline wake-word detection
+- whisper.cpp for local speech recognition
+- Piper for local text-to-speech
+- Ollama for local language and vision model hosting
 
-Local secrets and runtime assets are intentionally excluded from Git.
+The custom BMO voice is based on voice work distributed with the original project. Preserve upstream copyright, attribution, and applicable third-party licensing requirements when redistributing this project or its assets.
 
-Examples:
+## License
 
-```text
-.env
-.env.spotify
-credentials.google-calendar.json
-token.google-calendar.json
-calendar_selection.json
-logs/
-piper/
-whisper.cpp/
-venv/
-```
+See [LICENSE](LICENSE) for the software license. The software license does not grant rights to third-party characters, trademarks, audio, artwork, models, or other bundled assets.
 
-`wakeword.onnx` is intentionally tracked.
-
-Do not commit OAuth tokens, API secrets, personal calendar data, private network details, or machine-specific credentials.
-
----
-
-## 🌐 Networking
-
-The Android device and MacBook communicate over **Tailscale**:
-
-```text
-LG G7 ThinQ
-     │
-     │ Tailscale
-     ▼
-MacBook Pro
-FastAPI :8000
-```
-
-The backend listens on all interfaces so it can be reached through the Mac's Tailscale address.
-
-The current setup uses HTTP inside the Tailnet. Do not expose the backend directly to the public internet without adding appropriate authentication and transport security.
-
----
-
-## ⚠️ Known limitations
-
-- **HTTP transport:** Android currently talks to the Mac over Tailscale HTTP rather than HTTPS.
-- **Hardware-specific fork:** This branch is tested around the Mac + Android architecture above. Some optional compatibility code from earlier hardware targets remains but is not part of the supported Mac install path.
-- **Android release build:** signed release APK work is still part of the initial beta release process.
-
----
-
-## ✅ Project status
-
-| Area | Status |
-|---|---|
-| Core interaction | ✅ |
-| Wake word | ✅ |
-| Android resilience | ✅ |
-| Memory | ✅ |
-| Timers & reminders | ✅ |
-| Web search | ✅ |
-| Weather | ✅ |
-| Google Calendar | ✅ |
-| Spotify | ✅ |
-| Spotify idle reconnect / one-shot retry | ✅ |
-| Vision | ✅ |
-| Developer/debug screen | ✅ |
-| Pronunciation editor | ✅ |
-| Diagnostics / logging | ✅ |
-| Mac install/start path | ✅ |
-| README / repo cleanup | ✅ |
-| Signed Android APK | ⏳ |
-| Tagged beta release | ⏳ |
-
-The initial public release should be considered **experimental / beta**.
-
----
-
-## 💚 Project philosophy
-
-> **"I LOVE THIS, but I don't want to invest money into it, so I'll use hardware I already own and build around that."**
-
-The project deliberately favors reusing existing hardware over buying extra parts, while still trying to make BMO feel like one physical, expressive character.
-
----
-
-## 🙏 Credits
-
-- **Original project:** [brenpoly/be-more-agent](https://github.com/brenpoly/be-more-agent)
-- **Hailo fork / major inspiration:** [moorew/be-more-hailo](https://github.com/moorew/be-more-hailo)
-- **Custom BMO voice:** based on the voice work distributed with the original project
-- **OpenWakeWord:** offline wake-word detection
-- **whisper.cpp:** local speech recognition
-- **Piper:** local text-to-speech
-- **Ollama:** local LLM / vision model runtime
-
-Please preserve upstream copyright, attribution, and license notices when redistributing modified work.
-
----
-
-## 📄 License
-
-See [`LICENSE`](LICENSE) for the software license and preserve any applicable upstream attribution or asset licensing requirements.
-
-This repository is an unofficial, non-commercial fan project. BMO and Adventure Time are trademarks and copyrights of their respective rights holders.
+This repository is an unofficial, non-commercial fan project. BMO and Adventure Time remain trademarks and copyrights of their respective rights holders.
