@@ -6,7 +6,7 @@ All notable changes to this project are documented here. The project is experime
 
 ### Planned
 
-- GitHub Actions and automated signed Android builds.
+- Automated signed Android builds.
 - Explicit Android-to-Mac protocol versioning.
 - Documented BMO memory backup and restore tooling.
 - FastAPI lifespan migration.
@@ -34,6 +34,8 @@ First public beta of the supported Mac and Android architecture.
 - Pronunciation editor and rotating logs.
 - Runtime Android backend configuration.
 - Mac setup and one-command startup scripts.
+- Complete Android setup and troubleshooting guide.
+- GitHub Actions checks for Python unit tests and unsigned Android debug builds.
 - Regression tests for critical routing and actions.
 
 ### Changed

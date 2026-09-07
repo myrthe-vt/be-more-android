@@ -107,6 +107,8 @@ http://0.0.0.0:8000
 
 The Android client lives in the `android/` directory of this repository.
 
+For complete Android Studio, device, backend, Spotify, and troubleshooting instructions, see [`docs/ANDROID_SETUP.md`](docs/ANDROID_SETUP.md).
+
 Current build configuration:
 
 | Setting | Value |
