@@ -22,10 +22,10 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Python 3.13
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.13"
           cache: pip
@@ -50,10 +50,10 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up JDK 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: "17"
@@ -69,7 +69,7 @@ jobs:
         uses: android-actions/setup-android@v3
 
       - name: Install Android SDK 37
-        run: sdkmanager "platforms;android-37" "build-tools;37.0.0"
+        run: sdkmanager --channel=3 "platforms;android-37" "build-tools;37.0.0"
 
       - name: Make Gradle wrapper executable
         run: chmod +x gradlew
