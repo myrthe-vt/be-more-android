@@ -47,6 +47,7 @@ First public beta of the supported Mac and Android architecture.
 - Hardened the Android manifest, WebView, lifecycle, and back-button behavior.
 - Improved recovery from backend, network, WebView, and Spotify interruptions.
 - Improved setup checks for Python, dependencies, speech tools, models, and configuration.
+- Aligned Android compile and target SDK settings with the available API 36 toolchain.
 - Improved deterministic routing and public release documentation.
 
 ### Fixed

@@ -7,7 +7,7 @@ The Android application provides BMO's fullscreen face, wake-word audio, command
 ## Requirements
 
 - Android 8.0 or newer (`minSdk 26`)
-- Android Studio with Android SDK 37
+- Android Studio with Android SDK 36
 - JDK 17 or newer for the Gradle build
 - USB debugging or another APK installation method
 - A reachable Be More Agent Mac backend
@@ -39,7 +39,7 @@ Open the repository's `android` directory in Android Studio, not the repository 
 Allow Android Studio to:
 
 1. Use the Gradle wrapper from the repository.
-2. Install any missing Android SDK 37 components.
+2. Install any missing Android SDK 36 components.
 3. Complete Gradle synchronization.
 
 The app configuration is:
@@ -48,8 +48,8 @@ The app configuration is:
 |---|---|
 | Application ID | `com.sapphi.bmo` |
 | Minimum SDK | 26 |
-| Target SDK | 37 |
-| Compile SDK | 37 |
+| Target SDK | 36 |
+| Compile SDK | 36 |
 | App version | `0.9.0` |
 | Orientation | Landscape |
 

@@ -115,8 +115,8 @@ Current build configuration:
 |---|---|
 | Package | `com.sapphi.bmo` |
 | minSdk | 26 |
-| targetSdk | 37 |
-| compileSdk | 37 |
+| targetSdk | 36 |
+| compileSdk | 36 |
 | Java | 11 |
 | Orientation | Landscape |
 

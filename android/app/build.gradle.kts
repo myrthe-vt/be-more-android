@@ -31,13 +31,13 @@ android {
     namespace = "com.sapphi.bmo"
 
     compileSdk {
-        version = release(37)
+        version = release(36)
     }
 
     defaultConfig {
         applicationId = "com.sapphi.bmo"
         minSdk = 26
-        targetSdk = 37
+        targetSdk = 36
         versionCode = 1
         versionName = "0.9.0"
 
