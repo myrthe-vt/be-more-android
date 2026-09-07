@@ -1,4 +1,4 @@
-# Be More Agent / BMO 🤖
+# Be More Android / BMO 🤖
 
 An embodied, local-first BMO assistant that uses an Android phone as the body and a Mac as the brain.
 
