@@ -890,6 +890,13 @@ def get_spotify_track_query(
         "?.!"
     ).strip()
 
+    query = re.sub(
+        r"\s+on\s+spotify\s*$",
+        "",
+        query,
+        flags=re.IGNORECASE,
+    ).strip()
+
     if not query:
         return None
 
@@ -2474,6 +2481,28 @@ def chat(request: ChatRequest, background_tasks: BackgroundTasks):
             spotify_query,
         )
 
+        response_history = save_android_memory(
+            list(persistent_history) + [
+                {
+                    "role": "user",
+                    "content": user_text,
+                },
+                {
+                    "role": "assistant",
+                    "content": "Spotify isn't available right now.",
+                },
+            ]
+        )
+
+        return {
+            "response": "Spotify isn't available right now.",
+            "history": response_history,
+            "audio_url": None,
+            "action": {
+                "type": "spotify_unavailable",
+            },
+        }
+
     # ------------------------------------------------------------------
     # Deterministic Spotify track search routing
     # ------------------------------------------------------------------
@@ -2574,6 +2603,28 @@ def chat(request: ChatRequest, background_tasks: BackgroundTasks):
             "No Spotify track match for: %r",
             spotify_query,
         )
+
+        response_history = save_android_memory(
+            list(persistent_history) + [
+                {
+                    "role": "user",
+                    "content": user_text,
+                },
+                {
+                    "role": "assistant",
+                    "content": "Spotify isn't available right now.",
+                },
+            ]
+        )
+
+        return {
+            "response": "Spotify isn't available right now.",
+            "history": response_history,
+            "audio_url": None,
+            "action": {
+                "type": "spotify_unavailable",
+            },
+        }
 
     # ------------------------------------------------------------------
     # Deterministic Android network-state routing

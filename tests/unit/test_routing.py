@@ -233,3 +233,20 @@ def test_homelab_positive_routes(text):
 )
 def test_homelab_does_not_hijack_normal_conversation(text):
     assert is_homelab_request(text) is False
+
+def test_spotify_explicit_track_with_on_spotify():
+    assert (
+        get_spotify_track_query(
+            "Play Pink Pony Club on Spotify"
+        )
+        == "Pink Pony Club"
+    )
+
+
+def test_spotify_explicit_artist_with_on_spotify():
+    assert (
+        get_spotify_track_query(
+            "Play Chappell Roan on Spotify"
+        )
+        == "Chappell Roan"
+    )
